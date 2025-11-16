@@ -1,0 +1,23 @@
+{
+  "id": "demo",
+  "name": "Demo Track System",
+  "scale": "H0",
+  "ratio": 87,
+  "components": [
+    {
+      "id": "DEMO_STRAIGHT",
+      "label": "Demo Straight",
+      "type": "straight"
+    },
+    {
+      "id": "DEMO_CURVE",
+      "label": "Demo Curve",
+      "type": "curve"
+    },
+    {
+      "id": "DEMO_SWITCH",
+      "label": "Demo Switch",
+      "type": "switch"
+    }
+  ]
+}
