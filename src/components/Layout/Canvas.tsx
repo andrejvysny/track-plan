@@ -78,7 +78,8 @@ const VIEWPORT_SIZE = 1800
 const SNAP_DISTANCE_MM = 8
 const ANGLE_TOLERANCE_DEG = 15
 const ENDPOINT_CLICK_DISTANCE_MM = 10
-const ENDPOINT_CIRCLE_RADIUS = 4
+const ENDPOINT_CIRCLE_RADIUS = 8
+const ENDPOINT_VECTOR_LENGTH_MM = 24
 const TRACK_STROKE_WIDTH_MM = 28
 const TRACK_FILL_COLOR = '#1f2937'
 const TRACK_BORDER_COLOR = 'darkgrey'
@@ -829,10 +830,22 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       fixedRef = secondRef
       movingRef = firstRef
     } else {
-      const selectedRef =
-        selectedEndpoints.find((endpoint) => endpoint.itemId === selectedItemId) ?? firstRef
-      movingRef = selectedRef
-      fixedRef = selectedRef === firstRef ? secondRef : firstRef
+      // Move the smaller connected group into the larger one to avoid ripping apart existing chains.
+      const firstGroup = getConnectedGroupIds(firstRef.itemId)
+      const secondGroup = getConnectedGroupIds(secondRef.itemId)
+      if (firstGroup.length > secondGroup.length) {
+        fixedRef = firstRef
+        movingRef = secondRef
+      } else if (secondGroup.length > firstGroup.length) {
+        fixedRef = secondRef
+        movingRef = firstRef
+      } else {
+        // Tie-breaker: respect explicit user selection or fall back to firstRef.
+        const selectedRef =
+          selectedEndpoints.find((endpoint) => endpoint.itemId === selectedItemId) ?? firstRef
+        movingRef = selectedRef
+        fixedRef = selectedRef === firstRef ? secondRef : firstRef
+      }
     }
 
     if (!fixedRef || !movingRef) return
@@ -859,21 +872,42 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       return
     }
 
+    if (Math.abs(fixedConnectorLocal.widthMm - movingConnectorLocal.widthMm) > 1e-3) {
+      console.warn('Endpoints are not compatible (width mismatch)', {
+        fixed: fixedConnectorLocal.widthMm,
+        moving: movingConnectorLocal.widthMm,
+      })
+      return
+    }
+
     const transform = computeConnectionTransform(fixedItem, fixedConnectorLocal, movingConnectorLocal)
     const newConnection: EndpointConnection = { endpoints: [fixedRef, movingRef] }
 
+    const movingGroupIds = getConnectedGroupIds(movingRef.itemId)
+    const deltaRotation = normalizeAngle(transform.rotationDeg - movingItem.rotationDeg)
+    const pivotBefore = { x: movingItem.x, y: movingItem.y }
+    const pivotAfter = { x: transform.position.x, y: transform.position.y }
+
     onUpdateLayout((previous) => ({
       ...previous,
-      placedItems: previous.placedItems.map((item) =>
-        item.id === movingItem.id
-          ? {
-              ...item,
-              x: transform.position.x,
-              y: transform.position.y,
-              rotationDeg: transform.rotationDeg,
-            }
-          : item,
-      ),
+      placedItems: previous.placedItems.map((item) => {
+        if (!movingGroupIds.includes(item.id)) {
+          return item
+        }
+
+        // Rotate+translate the whole moving group around the moving item pivot
+        const rel = { x: item.x - pivotBefore.x, y: item.y - pivotBefore.y }
+        const rotated = rotatePointLocal(rel.x, rel.y, deltaRotation)
+        const x = pivotAfter.x + rotated.x
+        const y = pivotAfter.y + rotated.y
+
+        return {
+          ...item,
+          x,
+          y,
+          rotationDeg: normalizeAngle(item.rotationDeg + deltaRotation),
+        }
+      }),
       connections: [...(previous.connections ?? []), newConnection],
     }))
   }, [
@@ -1027,24 +1061,64 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                     : isConnectedEndpoint
                     ? CONNECTED_ENDPOINT_COLOR
                     : '#cbd5f5'
+                  const vectorEndX = local.xMm + (local.dir?.x ?? 0) * ENDPOINT_VECTOR_LENGTH_MM
+                  const vectorEndY = local.yMm + (local.dir?.y ?? 0) * ENDPOINT_VECTOR_LENGTH_MM
+                  // Position label at the end of the vector, offset slightly
+                  const labelOffsetX = (local.dir?.x ?? 0) * (ENDPOINT_VECTOR_LENGTH_MM + 8)
+                  const labelOffsetY = (local.dir?.y ?? 0) * (ENDPOINT_VECTOR_LENGTH_MM + 8)
+                  const labelX = local.xMm + labelOffsetX
+                  const labelY = local.yMm + labelOffsetY
+                  const directionDeg = local.directionDeg ?? 0
                   return (
-                    <circle
-                      key={`${item.id}-${key}`}
-                      cx={local.xMm}
-                      cy={local.yMm}
-                      r={ENDPOINT_CIRCLE_RADIUS}
-                      fill={endpointFill}
-                      stroke={endpointStroke}
-                      strokeWidth={isEndpointSelected || isConnectedEndpoint ? 2 : 1}
-                      opacity={0.8}
-                      pointerEvents="visibleStroke"
-                      onPointerDown={(event) => {
-                        event.stopPropagation()
-                        event.preventDefault()
-                        const additive = event.shiftKey
-                        updateEndpointSelection({ itemId: item.id, connectorKey: key }, additive)
-                      }}
-                    />
+                    <g key={`${item.id}-${key}`} pointerEvents="visibleStroke">
+                      <line
+                        x1={local.xMm}
+                        y1={local.yMm}
+                        x2={vectorEndX}
+                        y2={vectorEndY}
+                        stroke={endpointStroke}
+                        strokeWidth={isEndpointSelected || isConnectedEndpoint ? 2 : 1}
+                        opacity={0.7}
+                        pointerEvents="none"
+                      />
+                      <circle
+                        cx={local.xMm}
+                        cy={local.yMm}
+                        r={ENDPOINT_CIRCLE_RADIUS}
+                        fill={endpointFill}
+                        stroke={endpointStroke}
+                        strokeWidth={isEndpointSelected || isConnectedEndpoint ? 2 : 1}
+                        opacity={0.8}
+                        onPointerDown={(event) => {
+                          event.stopPropagation()
+                          event.preventDefault()
+                          const additive = event.shiftKey
+                          updateEndpointSelection({ itemId: item.id, connectorKey: key }, additive)
+                        }}
+                      />
+                      <g pointerEvents="none">
+                        <rect
+                          x={labelX - 20}
+                          y={labelY - 8}
+                          width={40}
+                          height={20}
+                          fill="rgba(0, 0, 0, 0.7)"
+                          rx={2}
+                        />
+                        <text
+                          x={labelX}
+                          y={labelY}
+                          fontSize={8}
+                          fill="#ffffff"
+                          textAnchor="middle"
+                          dominantBaseline="middle"
+                          style={{ userSelect: 'none', fontFamily: 'monospace' }}
+                        >
+                          <tspan x={labelX} dy="0">{key}</tspan>
+                          <tspan x={labelX} dy="10">{directionDeg.toFixed(1)}°</tspan>
+                        </text>
+                      </g>
+                    </g>
                   )
                 })}
                 </g>

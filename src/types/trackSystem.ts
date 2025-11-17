@@ -1,5 +1,10 @@
 export type TrackComponentType = 'straight' | 'curve' | 'switch' | 'other'
 
+export interface Vec2 {
+  x: number
+  y: number
+}
+
 export interface TrackComponentDefinition {
   id: string
   label: string
@@ -26,6 +31,11 @@ export interface TrackSystemDefinition {
 export interface TrackConnector {
   xMm: number
   yMm: number
+  /** Unit tangent pointing outwards from the track at this endpoint */
+  dir: Vec2
+  /** Width of the short edge centered on this endpoint (fixed 28 mm for PIKO A) */
+  widthMm: number
+  /** Kept for backwards compatibility with existing logic/UI */
   directionDeg: number
 }
 

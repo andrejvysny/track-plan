@@ -1,11 +1,5 @@
-import type {
-  ComponentGeometry,
-  TrackComponentDefinition,
-  TrackConnector,
-  WorldTransform,
-} from '../types/trackSystem'
-
-const toRad = (deg: number) => (deg * Math.PI) / 180
+import type { ComponentGeometry, TrackComponentDefinition, TrackConnector, WorldTransform } from '../types/trackSystem'
+import { normalizeVec, toDeg, toRad, TRACK_EDGE_WIDTH_MM } from './geometryUtils'
 
 const warnMissing = (id: string) => {
   if (import.meta.env?.DEV) {
@@ -144,20 +138,23 @@ export function getComponentGeometry(def: TrackComponentDefinition): ComponentGe
   }
 }
 
+const makeConnector = (xMm: number, yMm: number, directionDeg: number): TrackConnector => {
+  const angleRad = toRad(directionDeg)
+  const dir = normalizeVec({ x: Math.cos(angleRad), y: Math.sin(angleRad) })
+  return {
+    xMm,
+    yMm,
+    dir,
+    widthMm: TRACK_EDGE_WIDTH_MM,
+    directionDeg,
+  }
+}
+
 function getStraightGeometry(def: TrackComponentDefinition): ComponentGeometry {
   const length = def.lengthMm ?? 0
 
-  const start: TrackConnector = {
-    xMm: 0,
-    yMm: 0,
-    directionDeg: 0,
-  }
-
-  const end: TrackConnector = {
-    xMm: length,
-    yMm: 0,
-    directionDeg: 0,
-  }
+  const start = makeConnector(0, 0, 180)
+  const end = makeConnector(length, 0, 0)
 
   const buildPathD = () => `M 0 0 L ${length} 0`
 
@@ -171,21 +168,16 @@ function getCurveGeometry(def: TrackComponentDefinition): ComponentGeometry {
   const theta = toRad(angleDeg)
   const directionSign = clockwise ? -1 : 1
 
-  const start: TrackConnector = {
-    xMm: 0,
-    yMm: 0,
-    directionDeg: 0,
-  }
+  // Tangent at the curve origin points along +X; outward from the track is aligned with travel direction.
+  // Start vector rotated -180° and track angle added for testing
+  const start = makeConnector(0, 0, 0 - 180 + angleDeg)
 
   const endX = radius * Math.sin(theta)
   const endY = directionSign * (radius - radius * Math.cos(theta))
-  const endDirection = directionSign * angleDeg
+  // Endpoint vector is horizontal (0°) pointing outside (right) for consistent visualization
+  const endDirection = 0
 
-  const end: TrackConnector = {
-    xMm: endX,
-    yMm: endY,
-    directionDeg: endDirection,
-  }
+  const end = makeConnector(endX, endY, endDirection)
 
   const sweepFlag = clockwise ? 1 : 0
 
@@ -212,25 +204,14 @@ function getSimpleSwitchGeometry(
     meta?.direction ?? (def.id.toUpperCase().includes('L') ? 'left' : 'right')
   const directionSign = direction === 'left' ? 1 : -1
 
-  const start: TrackConnector = {
-    xMm: 0,
-    yMm: 0,
-    directionDeg: 0,
-  }
+  const start = makeConnector(0, 0, 180)
 
-  const straightConnector: TrackConnector = {
-    xMm: straightLength,
-    yMm: 0,
-    directionDeg: 0,
-  }
+  const straightConnector = makeConnector(straightLength, 0, 0)
 
   const branchEndX = radius * Math.sin(thetaRad)
   const branchEndY = directionSign * (radius - radius * Math.cos(thetaRad))
-  const branchConnector: TrackConnector = {
-    xMm: branchEndX,
-    yMm: branchEndY,
-    directionDeg: directionSign * branchAngleDeg,
-  }
+  // Endpoint vector is horizontal (0°) pointing outside (right) for consistent visualization
+  const branchConnector = makeConnector(branchEndX, branchEndY, 0)
 
   const buildPathD = () => {
     const largeArcFlag = 0
@@ -258,13 +239,15 @@ function getCurvedSwitchGeometry(meta: CurvedSwitchMeta): ComponentGeometry {
   const sweepFlag = direction === 'left' ? 0 : 1
   const directionSign = direction === 'left' ? 1 : -1
 
-  const start: TrackConnector = { xMm: 0, yMm: 0, directionDeg: 0 }
+  // Start vector rotated -180° and track angle added for testing
+  const start = makeConnector(0, 0, 180 - 180 + angleDeg)
 
   const buildEnd = (radius: number): TrackConnector => {
     const xMm = radius * Math.sin(theta)
     const yMm = directionSign * (radius - radius * Math.cos(theta))
-    const directionDeg = directionSign * angleDeg
-    return { xMm, yMm, directionDeg }
+    // Endpoint vector is horizontal (0°) pointing outside (right) for consistent visualization
+    const directionDeg = 0
+    return makeConnector(xMm, yMm, directionDeg)
   }
 
   const outerEnd = buildEnd(outerRadiusMm)
@@ -291,14 +274,15 @@ function getCurvedSwitchGeometry(meta: CurvedSwitchMeta): ComponentGeometry {
 function getThreeWaySwitchGeometry(meta: ThreeWaySwitchMeta): ComponentGeometry {
   const { straightLengthMm, branchRadiusMm, branchAngleDeg, branchOffsetMm } = meta
   const theta = toRad(branchAngleDeg)
-  const start: TrackConnector = { xMm: 0, yMm: 0, directionDeg: 0 }
-  const mainEnd: TrackConnector = { xMm: straightLengthMm, yMm: 0, directionDeg: 0 }
+  const start = makeConnector(0, 0, 180)
+  const mainEnd = makeConnector(straightLengthMm, 0, 0)
 
   const buildBranch = (sign: 1 | -1): TrackConnector => {
     const xMm = branchOffsetMm + branchRadiusMm * Math.sin(theta)
     const yMm = sign * (branchRadiusMm - branchRadiusMm * Math.cos(theta))
-    const directionDeg = sign * branchAngleDeg
-    return { xMm, yMm, directionDeg }
+    // Endpoint vector is horizontal (0°) pointing outside (right) for consistent visualization
+    const directionDeg = 0
+    return makeConnector(xMm, yMm, directionDeg)
   }
 
   const leftBranch = buildBranch(1)
@@ -327,14 +311,15 @@ function getThreeWaySwitchGeometry(meta: ThreeWaySwitchMeta): ComponentGeometry 
 function getYSwitchGeometry(meta: YSwitchMeta): ComponentGeometry {
   const { stubLengthMm, branchRadiusMm, branchAngleDeg } = meta
   const theta = toRad(branchAngleDeg)
-  const start: TrackConnector = { xMm: 0, yMm: 0, directionDeg: 0 }
-  const stubEnd: TrackConnector = { xMm: stubLengthMm, yMm: 0, directionDeg: 0 }
+  const start = makeConnector(0, 0, 180)
+  const stubEnd = makeConnector(stubLengthMm, 0, 0)
 
   const buildBranch = (sign: 1 | -1): TrackConnector => {
     const xMm = stubLengthMm + branchRadiusMm * Math.sin(theta)
     const yMm = sign * (branchRadiusMm - branchRadiusMm * Math.cos(theta))
-    const directionDeg = sign * branchAngleDeg
-    return { xMm, yMm, directionDeg }
+    // Endpoint vector is horizontal (0°) pointing outside (right) for consistent visualization
+    const directionDeg = 0
+    return makeConnector(xMm, yMm, directionDeg)
   }
 
   const left = buildBranch(1)
@@ -364,12 +349,12 @@ function getDoubleSlipGeometry(meta: DoubleSlipMeta): ComponentGeometry {
   const { lengthMm, crossingAngleDeg, slipRadiusMm } = meta
   const half = lengthMm / 2
   const centerX = half
-  const start: TrackConnector = { xMm: 0, yMm: 0, directionDeg: 0 }
-  const end: TrackConnector = { xMm: lengthMm, yMm: 0, directionDeg: 0 }
+  const start = makeConnector(0, 0, 180)
+  const end = makeConnector(lengthMm, 0, 0)
 
   const verticalHalf = half
-  const top: TrackConnector = { xMm: centerX, yMm: verticalHalf, directionDeg: 90 }
-  const bottom: TrackConnector = { xMm: centerX, yMm: -verticalHalf, directionDeg: -90 }
+  const top = makeConnector(centerX, verticalHalf, 90)
+  const bottom = makeConnector(centerX, -verticalHalf, -90)
 
   const angleRad = toRad(crossingAngleDeg)
   const diagXOffset = half * Math.cos(angleRad)
@@ -424,11 +409,17 @@ export function transformConnector(local: TrackConnector, transform: WorldTransf
   const rad = toRad(transform.rotationDeg)
   const xr = local.xMm * Math.cos(rad) - local.yMm * Math.sin(rad)
   const yr = local.xMm * Math.sin(rad) + local.yMm * Math.cos(rad)
+  const dir = normalizeVec({
+    x: local.dir.x * Math.cos(rad) - local.dir.y * Math.sin(rad),
+    y: local.dir.x * Math.sin(rad) + local.dir.y * Math.cos(rad),
+  })
 
   return {
     xMm: xr + transform.x,
     yMm: yr + transform.y,
-    directionDeg: normalizeAngle(local.directionDeg + transform.rotationDeg),
+    dir,
+    widthMm: local.widthMm,
+    directionDeg: normalizeAngle(toDeg(Math.atan2(dir.y, dir.x))),
   }
 }
 
