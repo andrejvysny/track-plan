@@ -21,6 +21,10 @@ function App() {
     deleteProject,
     updateActiveProjectLayout,
     reloadFromLocalStorage,
+    undo,
+    redo,
+    canUndo,
+    canRedo,
   } = useProjectsState()
 
   const activeLayout = activeProject?.layout ?? null
@@ -172,22 +176,26 @@ function App() {
     <div className="app-root flex h-screen flex-col bg-slate-950 text-slate-100">
       <TopToolbar
         activeProject={activeProject}
-        onNewProject={createProject}
-        onReload={reloadFromLocalStorage}
-        onResetLayout={handleResetLayout}
-        onExportSvg={handleExportSvg}
-        onImport={handleImportStub}
-        onConnectEndpoints={handleConnectEndpoints}
-        onDisconnectEndpoints={handleDisconnectEndpoints}
-        onRotateSelectedLeft={() => handleRotateSelected(-ROTATION_STEP_DEG)}
-        onRotateSelectedRight={() => handleRotateSelected(ROTATION_STEP_DEG)}
-        onDeleteSelected={handleDeleteSelected}
-        onToggleGrounded={handleToggleGrounded}
-        onToggleDebug={() => setDebugMode((prev) => !prev)}
+          onNewProject={createProject}
+          onReload={reloadFromLocalStorage}
+          onResetLayout={handleResetLayout}
+          onExportSvg={handleExportSvg}
+          onImport={handleImportStub}
+          onConnectEndpoints={handleConnectEndpoints}
+          onDisconnectEndpoints={handleDisconnectEndpoints}
+          onRotateSelectedLeft={() => handleRotateSelected(-ROTATION_STEP_DEG)}
+          onRotateSelectedRight={() => handleRotateSelected(ROTATION_STEP_DEG)}
+          onDeleteSelected={handleDeleteSelected}
+          onToggleGrounded={handleToggleGrounded}
+          onUndo={undo}
+          onRedo={redo}
+          onToggleDebug={() => setDebugMode((prev) => !prev)}
         canConnectEndpoints={canConnectEndpoints}
         canDisconnectEndpoints={canDisconnectEndpoints}
         canRotateSelection={canRotateSelection}
         canDeleteSelection={canDeleteSelection}
+        canUndo={canUndo}
+        canRedo={canRedo}
         canToggleGroundSelection={canToggleGroundSelection}
         isSelectionGrounded={selectedItemIsGrounded}
         debugMode={debugMode}

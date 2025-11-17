@@ -14,11 +14,15 @@ interface TopToolbarProps {
   onRotateSelectedRight: () => void
   onDeleteSelected: () => void
   onToggleGrounded: () => void
+  onUndo: () => void
+  onRedo: () => void
   onToggleDebug: () => void
   canConnectEndpoints: boolean
   canDisconnectEndpoints: boolean
   canRotateSelection: boolean
   canDeleteSelection: boolean
+  canUndo: boolean
+  canRedo: boolean
   canToggleGroundSelection: boolean
   isSelectionGrounded: boolean
   debugMode: boolean
@@ -39,11 +43,15 @@ export function TopToolbar({
   onRotateSelectedRight,
   onDeleteSelected,
   onToggleGrounded,
+  onUndo,
+  onRedo,
   onToggleDebug,
   canConnectEndpoints,
   canDisconnectEndpoints,
   canRotateSelection,
   canDeleteSelection,
+  canUndo,
+  canRedo,
   canToggleGroundSelection,
   isSelectionGrounded,
   debugMode,
@@ -142,6 +150,22 @@ export function TopToolbar({
             className={`${baseControlStyles} ${dangerButton}`}
           >
             Disconnect
+          </button>
+          <button
+            type="button"
+            onClick={onUndo}
+            disabled={!canUndo}
+            className={`${baseControlStyles} border-slate-800 bg-slate-900 text-slate-100 hover:border-slate-600 hover:bg-slate-800`}
+          >
+            Undo
+          </button>
+          <button
+            type="button"
+            onClick={onRedo}
+            disabled={!canRedo}
+            className={`${baseControlStyles} border-slate-800 bg-slate-900 text-slate-100 hover:border-slate-600 hover:bg-slate-800`}
+          >
+            Redo
           </button>
           <button
             type="button"

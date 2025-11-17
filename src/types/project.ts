@@ -1,4 +1,5 @@
 import type { LayoutState } from './layout'
+import { cloneLayoutState } from '../utils/cloneLayout'
 
 const CURRENT_DATE_ISO = () => new Date().toISOString()
 
@@ -8,14 +9,6 @@ function generateProjectId() {
   }
 
   return `project-${Math.random().toString(36).slice(2, 10)}`
-}
-
-function cloneLayoutState(layout: LayoutState): LayoutState {
-  if (typeof structuredClone === 'function') {
-    return structuredClone(layout)
-  }
-
-  return JSON.parse(JSON.stringify(layout))
 }
 
 export interface Project {
