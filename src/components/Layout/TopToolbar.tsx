@@ -43,52 +43,62 @@ export function TopToolbar({
   canToggleGroundSelection,
   isSelectionGrounded,
 }: TopToolbarProps) {
+  const baseControlStyles =
+    'rounded border px-2 py-1 font-semibold transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2'
+  const accentButton =
+    'border-blue-500/60 bg-blue-500/10 text-blue-200 hover:border-blue-400 hover:bg-blue-500/20 disabled:border-slate-800 disabled:bg-slate-900/70 disabled:text-slate-600'
+  const dangerButton =
+    'border-red-500/60 bg-red-500/10 text-red-300 hover:border-red-400 hover:bg-red-500/20 disabled:border-slate-800 disabled:bg-slate-900/70 disabled:text-slate-600'
+  const rotateButton =
+    'border-slate-800 bg-slate-900 text-slate-100 hover:border-slate-600 hover:bg-slate-800 disabled:border-slate-800 disabled:bg-slate-900/70 disabled:text-slate-600'
+  const groundButton =
+    'border-amber-500/60 bg-amber-500/10 text-amber-300 hover:border-amber-400 hover:bg-amber-500/20 disabled:border-slate-800 disabled:bg-slate-900/70 disabled:text-slate-600'
   return (
-    <header className="toolbar-top flex h-12 items-center justify-between border-b border-gray-200 bg-white px-4">
+    <header className="toolbar-top flex h-12 items-center justify-between border-b border-slate-800 bg-slate-950 px-4 text-slate-100">
       <div>
-        <p className="text-sm font-semibold text-slate-900">Track Planner</p>
-        <p className="text-xs text-gray-500">
+        <p className="text-sm font-semibold text-slate-100">Track Planner</p>
+        <p className="text-xs text-slate-400">
           {activeProject ? `Project • ${activeProject.name}` : 'No project selected'}
         </p>
       </div>
       <div className="flex flex-1 items-center justify-between gap-4 text-xs">
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-3">
           <button
             type="button"
             onClick={onNewProject}
-            className="rounded border border-gray-300 bg-white px-2 py-1 font-semibold text-gray-700 transition hover:border-gray-400 hover:bg-gray-100"
+            className={`${baseControlStyles} border-slate-800 bg-slate-900 text-slate-100 hover:border-slate-600 hover:bg-slate-800 hover:text-slate-100`}
           >
             New Project
           </button>
           <button
             type="button"
             onClick={onSave}
-            className="rounded border border-gray-300 bg-white px-2 py-1 font-semibold text-gray-700 transition hover:border-gray-400 hover:bg-gray-100"
+            className={`${baseControlStyles} border-slate-800 bg-slate-900 text-slate-100 hover:border-slate-600 hover:bg-slate-800 hover:text-slate-100`}
           >
             Save
           </button>
           <button
             type="button"
             onClick={onReload}
-            className="rounded border border-gray-300 bg-white px-2 py-1 font-semibold text-gray-700 transition hover:border-gray-400 hover:bg-gray-100"
+            className={`${baseControlStyles} border-slate-800 bg-slate-900 text-slate-100 hover:border-slate-600 hover:bg-slate-800 hover:text-slate-100`}
           >
             Reload
           </button>
           <button
             type="button"
             onClick={onResetLayout}
-            className="rounded border border-gray-300 bg-white px-2 py-1 font-semibold text-gray-700 transition hover:border-gray-400 hover:bg-gray-100"
+            className={`${baseControlStyles} border-slate-800 bg-slate-900 text-slate-100 hover:border-slate-600 hover:bg-slate-800 hover:text-slate-100`}
           >
             Reset
           </button>
         </div>
 
-        <div className="flex flex-1 items-center justify-center gap-4">
+        <div className="flex flex-1 items-center justify-center gap-3">
           <button
             type="button"
             onClick={onConnectEndpoints}
             disabled={!canConnectEndpoints}
-            className="rounded border border-blue-200 bg-blue-50 px-2 py-1 font-semibold text-blue-600 transition hover:border-blue-300 hover:bg-blue-100 disabled:cursor-not-allowed disabled:border-gray-200 disabled:bg-gray-100 disabled:text-gray-400"
+            className={`${baseControlStyles} ${accentButton}`}
           >
             Connect endpoints
           </button>
@@ -96,7 +106,7 @@ export function TopToolbar({
             type="button"
             onClick={onDisconnectEndpoints}
             disabled={!canDisconnectEndpoints}
-            className="rounded border border-red-200 bg-red-50 px-2 py-1 font-semibold text-red-600 transition hover:border-red-300 hover:bg-red-100 disabled:cursor-not-allowed disabled:border-gray-200 disabled:bg-gray-100 disabled:text-gray-400"
+            className={`${baseControlStyles} ${dangerButton}`}
           >
             Disconnect
           </button>
@@ -104,7 +114,7 @@ export function TopToolbar({
             type="button"
             onClick={onRotateSelectedLeft}
             disabled={!canRotateSelection}
-            className="rounded border border-gray-300 bg-white px-2 py-1 font-semibold text-gray-700 transition hover:border-gray-400 hover:bg-gray-100 disabled:cursor-not-allowed disabled:border-gray-200 disabled:bg-gray-100 disabled:text-gray-400"
+            className={`${baseControlStyles} ${rotateButton}`}
           >
             Rotate ⟲
           </button>
@@ -112,7 +122,7 @@ export function TopToolbar({
             type="button"
             onClick={onRotateSelectedRight}
             disabled={!canRotateSelection}
-            className="rounded border border-gray-300 bg-white px-2 py-1 font-semibold text-gray-700 transition hover:border-gray-400 hover:bg-gray-100 disabled:cursor-not-allowed disabled:border-gray-200 disabled:bg-gray-100 disabled:text-gray-400"
+            className={`${baseControlStyles} ${rotateButton}`}
           >
             Rotate ⟳
           </button>
@@ -120,7 +130,7 @@ export function TopToolbar({
             type="button"
             onClick={onToggleGrounded}
             disabled={!canToggleGroundSelection}
-            className="rounded border border-amber-200 bg-amber-50 px-2 py-1 font-semibold text-amber-600 transition hover:border-amber-300 hover:bg-amber-100 disabled:cursor-not-allowed disabled:border-gray-200 disabled:bg-gray-100 disabled:text-gray-400"
+            className={`${baseControlStyles} ${groundButton}`}
           >
             {isSelectionGrounded ? 'Unground' : 'Ground'}
           </button>
@@ -128,24 +138,24 @@ export function TopToolbar({
             type="button"
             onClick={onDeleteSelected}
             disabled={!canDeleteSelection}
-            className="rounded border border-red-200 bg-red-50 px-2 py-1 font-semibold text-red-600 transition hover:border-red-300 hover:bg-red-100 disabled:cursor-not-allowed disabled:border-gray-200 disabled:bg-gray-100 disabled:text-gray-400"
+            className={`${baseControlStyles} ${dangerButton}`}
           >
             Delete
           </button>
         </div>
 
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-3">
           <button
             type="button"
             onClick={onExportSvg}
-            className="rounded border border-gray-300 bg-white px-2 py-1 font-semibold text-gray-700 transition hover:border-gray-400 hover:bg-gray-100"
+            className={`${baseControlStyles} border-slate-800 bg-slate-900 text-slate-100 hover:border-slate-600 hover:bg-slate-800 hover:text-slate-100`}
           >
             Export SVG
           </button>
           <button
             type="button"
             onClick={onImport}
-            className="rounded border border-gray-300 bg-white px-2 py-1 font-semibold text-gray-700 transition hover:border-gray-400 hover:bg-gray-100"
+            className={`${baseControlStyles} border-slate-800 bg-slate-900 text-slate-100 hover:border-slate-600 hover:bg-slate-800 hover:text-slate-100`}
           >
             Import
           </button>
