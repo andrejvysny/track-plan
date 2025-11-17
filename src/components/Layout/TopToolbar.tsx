@@ -14,12 +14,14 @@ interface TopToolbarProps {
   onRotateSelectedRight: () => void
   onDeleteSelected: () => void
   onToggleGrounded: () => void
+  onToggleDebug: () => void
   canConnectEndpoints: boolean
   canDisconnectEndpoints: boolean
   canRotateSelection: boolean
   canDeleteSelection: boolean
   canToggleGroundSelection: boolean
   isSelectionGrounded: boolean
+  debugMode: boolean
 }
 
 export function TopToolbar({
@@ -36,12 +38,14 @@ export function TopToolbar({
   onRotateSelectedRight,
   onDeleteSelected,
   onToggleGrounded,
+  onToggleDebug,
   canConnectEndpoints,
   canDisconnectEndpoints,
   canRotateSelection,
   canDeleteSelection,
   canToggleGroundSelection,
   isSelectionGrounded,
+  debugMode,
 }: TopToolbarProps) {
   const baseControlStyles =
     'rounded border px-2 py-1 font-semibold transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2'
@@ -53,6 +57,8 @@ export function TopToolbar({
     'border-slate-800 bg-slate-900 text-slate-100 hover:border-slate-600 hover:bg-slate-800 disabled:border-slate-800 disabled:bg-slate-900/70 disabled:text-slate-600'
   const groundButton =
     'border-amber-500/60 bg-amber-500/10 text-amber-300 hover:border-amber-400 hover:bg-amber-500/20 disabled:border-slate-800 disabled:bg-slate-900/70 disabled:text-slate-600'
+  const debugButton =
+    'border-purple-500/60 bg-purple-500/10 text-purple-300 hover:border-purple-400 hover:bg-purple-500/20'
   return (
     <header className="toolbar-top flex h-12 items-center justify-between border-b border-slate-800 bg-slate-950 px-4 text-slate-100">
       <div>
@@ -145,6 +151,13 @@ export function TopToolbar({
         </div>
 
         <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={onToggleDebug}
+            className={`${baseControlStyles} ${debugButton} ${debugMode ? 'border-purple-400 bg-purple-500/30' : ''}`}
+          >
+            DEBUG
+          </button>
           <button
             type="button"
             onClick={onExportSvg}

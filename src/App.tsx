@@ -27,6 +27,7 @@ function App() {
   const canvasRef = useRef<CanvasHandle | null>(null)
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null)
   const [selectedEndpoints, setSelectedEndpoints] = useState<EndpointRef[]>([])
+  const [debugMode, setDebugMode] = useState(false)
 
   const activeTrackSystem = useMemo(
     () =>
@@ -185,12 +186,14 @@ function App() {
         onRotateSelectedRight={() => handleRotateSelected(ROTATION_STEP_DEG)}
         onDeleteSelected={handleDeleteSelected}
         onToggleGrounded={handleToggleGrounded}
+        onToggleDebug={() => setDebugMode((prev) => !prev)}
         canConnectEndpoints={canConnectEndpoints}
         canDisconnectEndpoints={canDisconnectEndpoints}
         canRotateSelection={canRotateSelection}
         canDeleteSelection={canDeleteSelection}
         canToggleGroundSelection={canToggleGroundSelection}
         isSelectionGrounded={selectedItemIsGrounded}
+        debugMode={debugMode}
       />
 
       <div className="app-main-row flex flex-1 min-h-0 overflow-hidden">
@@ -211,6 +214,7 @@ function App() {
             onUpdateLayout={updateActiveProjectLayout}
             onSelectedItemChange={setSelectedItemId}
             onSelectedEndpointsChange={setSelectedEndpoints}
+            debugMode={debugMode}
           />
         </div>
 

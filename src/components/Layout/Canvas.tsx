@@ -35,6 +35,7 @@ type CanvasProps = {
   onUpdateLayout: (updater: (layout: LayoutState) => LayoutState) => void
   onSelectedItemChange?: (itemId: string | null) => void
   onSelectedEndpointsChange?: (endpoints: EndpointRef[]) => void
+  debugMode?: boolean
 }
 
 export interface CanvasHandle {
@@ -90,7 +91,7 @@ const GROUNDED_TRACK_BORDER_COLOR = '#facc15'
 const LABEL_OFFSET_MM = 18
 
 export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
-  { layout, trackSystem, onUpdateLayout, onSelectedItemChange, onSelectedEndpointsChange },
+  { layout, trackSystem, onUpdateLayout, onSelectedItemChange, onSelectedEndpointsChange, debugMode = false },
   ref,
 ) {
   const svgRef = useRef<SVGSVGElement | null>(null)
@@ -105,6 +106,7 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   const [dragPreview, setDragPreview] = useState<DragPreview | null>(null)
   const [dragGroupIds, setDragGroupIds] = useState<string[] | null>(null)
   const [dragGroupDelta, setDragGroupDelta] = useState<{ x: number; y: number } | null>(null)
+  const [snappedEndpoints, setSnappedEndpoints] = useState<{ moving: EndpointRef; target: EndpointRef } | null>(null)
 
   const [isPanning, setIsPanning] = useState(false)
   const [camera, setCamera] = useState({
@@ -265,64 +267,6 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     onSelectedEndpointsChange?.(selectedEndpoints)
   }, [onSelectedEndpointsChange, selectedEndpoints])
 
-  useEffect(() => {
-    const handlePointerUp = () => {
-      if (draggingItemId) {
-        const groupStarts = dragGroupStartTransformsRef.current
-        const hasGroupDelta =
-          dragGroupDelta && (Math.abs(dragGroupDelta.x) > 1e-6 || Math.abs(dragGroupDelta.y) > 1e-6)
-        if (groupStarts && dragGroupDelta && hasGroupDelta) {
-          onUpdateLayout((previous) => ({
-            ...previous,
-            placedItems: previous.placedItems.map((item) => {
-              const start = groupStarts[item.id]
-              if (!start) {
-                return item
-              }
-              return {
-                ...item,
-                x: start.x + dragGroupDelta.x,
-                y: start.y + dragGroupDelta.y,
-              }
-            }),
-          }))
-        } else if (dragPreview) {
-          onUpdateLayout((previous) => ({
-            ...previous,
-            placedItems: previous.placedItems.map((item) =>
-              item.id === draggingItemId
-                ? {
-                    ...item,
-                    x: dragPreview.x,
-                    y: dragPreview.y,
-                    rotationDeg: normalizeAngle(dragPreview.rotationDeg),
-                  }
-                : item,
-            ),
-          }))
-        }
-      }
-
-      setDraggingItemId(null)
-      setDragStartClient(null)
-      setDragStartTransform(null)
-      setDragPreview(null)
-      setDragGroupIds(null)
-      setDragGroupDelta(null)
-      dragGroupStartTransformsRef.current = null
-      setIsPanning(false)
-      lastPointerRef.current = null
-      releasePointer()
-    }
-
-    window.addEventListener('pointerup', handlePointerUp)
-    window.addEventListener('pointerleave', handlePointerUp)
-    return () => {
-      window.removeEventListener('pointerup', handlePointerUp)
-      window.removeEventListener('pointerleave', handlePointerUp)
-    }
-  }, [dragGroupDelta, dragPreview, draggingItemId, onUpdateLayout, releasePointer])
-
   const viewWidth = useMemo(() => VIEWPORT_SIZE / camera.scale, [camera.scale])
   const viewHeight = useMemo(() => VIEWPORT_SIZE / camera.scale, [camera.scale])
 
@@ -409,6 +353,165 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     [],
   )
 
+  // Auto-connect when dragging ends and endpoints are snapped
+  const autoConnectSnappedEndpoints = useCallback(
+    (movingRef: EndpointRef, targetRef: EndpointRef) => {
+      if (!layout || !trackSystem) return false
+      if (movingRef.itemId === targetRef.itemId) return false
+
+      // Don't auto-connect if target item is in the same connected group as moving item
+      const movingGroup = getConnectedGroupIds(movingRef.itemId)
+      if (movingGroup.includes(targetRef.itemId)) {
+        return false
+      }
+
+      // Don't auto-connect if either endpoint is already connected
+      if (
+        isEndpointConnected(movingRef.itemId, movingRef.connectorKey) ||
+        isEndpointConnected(targetRef.itemId, targetRef.connectorKey)
+      ) {
+        return false
+      }
+
+      // Don't auto-connect if the moving item is grounded
+      if (isItemGrounded(movingRef.itemId)) return false
+
+      const movingItem = layout.placedItems.find((item) => item.id === movingRef.itemId)
+      const targetItem = layout.placedItems.find((item) => item.id === targetRef.itemId)
+      if (!movingItem || !targetItem) return false
+      if (movingItem.trackSystemId !== trackSystem.id || targetItem.trackSystemId !== trackSystem.id) return false
+
+      const movingGeometry = geometryCache.get(movingItem.componentId)
+      const targetGeometry = geometryCache.get(targetItem.componentId)
+      if (!movingGeometry || !targetGeometry) return false
+
+      const movingConnectorLocal = getConnectorByKey(movingGeometry, movingRef.connectorKey)
+      const targetConnectorLocal = getConnectorByKey(targetGeometry, targetRef.connectorKey)
+      if (!movingConnectorLocal || !targetConnectorLocal) return false
+
+      // Check width compatibility
+      if (Math.abs(targetConnectorLocal.widthMm - movingConnectorLocal.widthMm) > 1e-3) {
+        return false
+      }
+
+      // Determine which item should be fixed (target) and which should move
+      // The item being dragged is always the moving one
+      const fixedRef = targetRef
+      const movingRefFinal = movingRef
+
+      const transform = computeConnectionTransform(targetItem, targetConnectorLocal, movingConnectorLocal)
+      const newConnection: EndpointConnection = { endpoints: [fixedRef, movingRefFinal] }
+
+      const movingGroupIds = getConnectedGroupIds(movingRefFinal.itemId)
+      const deltaRotation = normalizeAngle(transform.rotationDeg - movingItem.rotationDeg)
+      const pivotBefore = { x: movingItem.x, y: movingItem.y }
+      const pivotAfter = { x: transform.position.x, y: transform.position.y }
+
+      onUpdateLayout((previous) => ({
+        ...previous,
+        placedItems: previous.placedItems.map((item) => {
+          if (!movingGroupIds.includes(item.id)) {
+            return item
+          }
+
+          // Rotate+translate the whole moving group around the moving item pivot
+          const rel = { x: item.x - pivotBefore.x, y: item.y - pivotBefore.y }
+          const rotated = rotatePointLocal(rel.x, rel.y, deltaRotation)
+          const x = pivotAfter.x + rotated.x
+          const y = pivotAfter.y + rotated.y
+
+          return {
+            ...item,
+            x,
+            y,
+            rotationDeg: normalizeAngle(item.rotationDeg + deltaRotation),
+          }
+        }),
+        connections: [...(previous.connections ?? []), newConnection],
+      }))
+
+      return true
+    },
+    [
+      geometryCache,
+      getConnectorByKey,
+      getConnectedGroupIds,
+      isEndpointConnected,
+      isItemGrounded,
+      layout,
+      onUpdateLayout,
+      trackSystem,
+    ],
+  )
+
+  useEffect(() => {
+    const handlePointerUp = () => {
+      if (draggingItemId) {
+        // Try to auto-connect if endpoints are snapped
+        let connectionCreated = false
+        if (snappedEndpoints) {
+          connectionCreated = autoConnectSnappedEndpoints(snappedEndpoints.moving, snappedEndpoints.target)
+        }
+
+        // Only update item positions if connection wasn't created (connection already updates positions)
+        if (!connectionCreated) {
+          const groupStarts = dragGroupStartTransformsRef.current
+          const hasGroupDelta =
+            dragGroupDelta && (Math.abs(dragGroupDelta.x) > 1e-6 || Math.abs(dragGroupDelta.y) > 1e-6)
+          if (groupStarts && dragGroupDelta && hasGroupDelta) {
+            onUpdateLayout((previous) => ({
+              ...previous,
+              placedItems: previous.placedItems.map((item) => {
+                const start = groupStarts[item.id]
+                if (!start) {
+                  return item
+                }
+                return {
+                  ...item,
+                  x: start.x + dragGroupDelta.x,
+                  y: start.y + dragGroupDelta.y,
+                }
+              }),
+            }))
+          } else if (dragPreview) {
+            onUpdateLayout((previous) => ({
+              ...previous,
+              placedItems: previous.placedItems.map((item) =>
+                item.id === draggingItemId
+                  ? {
+                      ...item,
+                      x: dragPreview.x,
+                      y: dragPreview.y,
+                      rotationDeg: normalizeAngle(dragPreview.rotationDeg),
+                    }
+                  : item,
+              ),
+            }))
+          }
+        }
+      }
+
+      setDraggingItemId(null)
+      setDragStartClient(null)
+      setDragStartTransform(null)
+      setDragPreview(null)
+      setDragGroupIds(null)
+      setDragGroupDelta(null)
+      setSnappedEndpoints(null)
+      dragGroupStartTransformsRef.current = null
+      setIsPanning(false)
+      lastPointerRef.current = null
+      releasePointer()
+    }
+
+    window.addEventListener('pointerup', handlePointerUp)
+    window.addEventListener('pointerleave', handlePointerUp)
+    return () => {
+      window.removeEventListener('pointerup', handlePointerUp)
+      window.removeEventListener('pointerleave', handlePointerUp)
+    }
+  }, [dragGroupDelta, dragPreview, draggingItemId, onUpdateLayout, releasePointer, snappedEndpoints, autoConnectSnappedEndpoints])
+
   const findNearestEndpoint = useCallback(
     (worldPoint: { x: number; y: number }): { ref: EndpointRef; distance: number } | null => {
       if (!layout || !trackSystem) return null
@@ -439,6 +542,7 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   )
 
   // Endpoint selection toggles connectors with Shift/Ctrl so users can aim two legs before running Connect.
+  // When clicking on a connected endpoint (without shift), automatically select both endpoints for disconnect.
   const updateEndpointSelection = useCallback(
     (endpoint: EndpointRef, additive: boolean) => {
       setSelectedEndpoints((previous) => {
@@ -446,31 +550,59 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
           (candidate) => candidate.itemId === endpoint.itemId && candidate.connectorKey === endpoint.connectorKey,
         )
 
+        // Check if this endpoint is connected
+        const connection = findConnectionForEndpoint(endpoint)
+
         let next: EndpointRef[]
         if (additive) {
+          // Shift-click: toggle endpoint in selection
           if (exists) {
+            // Remove this endpoint from selection
             next = previous.filter(
               (entry) => !(entry.itemId === endpoint.itemId && entry.connectorKey === endpoint.connectorKey),
             )
+            // If we removed one endpoint of a connection, also remove the other
+            if (connection) {
+              const otherEndpoint = connection.endpoints.find(
+                (ep) => !(ep.itemId === endpoint.itemId && ep.connectorKey === endpoint.connectorKey),
+              )
+              if (otherEndpoint) {
+                next = next.filter(
+                  (entry) => !(entry.itemId === otherEndpoint.itemId && entry.connectorKey === otherEndpoint.connectorKey),
+                )
+              }
+            }
           } else {
+            // Add this endpoint to selection
             next = [...previous, endpoint]
+            // If this endpoint is connected, also add its partner
+            if (connection) {
+              const otherEndpoint = connection.endpoints.find(
+                (ep) => !(ep.itemId === endpoint.itemId && ep.connectorKey === endpoint.connectorKey),
+              )
+              if (otherEndpoint && !next.some((ep) => ep.itemId === otherEndpoint.itemId && ep.connectorKey === otherEndpoint.connectorKey)) {
+                next.push(otherEndpoint)
+              }
+            }
+            // Limit to 2 endpoints max
             if (next.length > 2) {
               next = next.slice(next.length - 2)
             }
           }
         } else {
-          next = [endpoint]
-        }
-
-        const latest = next[next.length - 1] ?? null
-        if (!additive && latest) {
-          const connection = findConnectionForEndpoint(latest)
+          // Normal click: select this endpoint (and its partner if connected)
           if (connection) {
-            setSelectedItemId(latest.itemId)
-            return [...connection.endpoints]
+            // Connected endpoint: select both endpoints for disconnect
+            next = [...connection.endpoints]
+            setSelectedItemId(endpoint.itemId)
+            return next
+          } else {
+            // Unconnected endpoint: select just this one
+            next = [endpoint]
           }
         }
 
+        const latest = next[next.length - 1] ?? null
         setSelectedItemId(latest?.itemId ?? null)
         return next
       })
@@ -486,6 +618,15 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   const handlePointerDown = (event: ReactPointerEvent<SVGSVGElement>) => {
     if (event.button !== 0) return
 
+    // Check if click is on an endpoint circle (handled by endpoint circle's onPointerDown)
+    const targetElement = event.target instanceof Element ? event.target : null
+    if (targetElement?.tagName === 'circle' && targetElement.closest('g[data-track-item]')) {
+      // Endpoint circle click - let the endpoint handler deal with it
+      return
+    }
+
+    // Fallback: check for nearby endpoints if not clicking on a circle
+    // This handles cases where the endpoint circle might not be clickable
     const worldPoint = clientPointToWorld({ x: event.clientX, y: event.clientY })
     if (worldPoint) {
       const nearest = findNearestEndpoint(worldPoint)
@@ -496,13 +637,12 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       }
     }
 
-    const targetElement = event.target instanceof Element ? event.target : null
     const clickedTrackItem = targetElement?.closest('[data-track-item]') ?? false
-    if (!clickedTrackItem) {
-      clearSelections()
+    if(clickedTrackItem) {
+      return
     }
 
-    if (event.target !== svgRef.current) return
+    // Background click: start panning and clear selections
     event.preventDefault()
     setIsPanning(true)
     capturePointer(event.pointerId)
@@ -526,8 +666,9 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
         rotationDeg: dragStartTransform.rotationDeg,
       }
       const snapped = computeSnappedTransform(draggingItemId, tentative)
-      const nextTransform = snapped ?? tentative
+      const nextTransform = snapped?.transform ?? tentative
       setDragPreview(nextTransform)
+      setSnappedEndpoints(snapped?.endpoints ?? null)
       const primaryStart = dragGroupStartTransformsRef.current?.[draggingItemId]
       if (primaryStart) {
         setDragGroupDelta({
@@ -670,7 +811,7 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   }
 
   const computeSnappedTransform = useCallback(
-    (itemId: string, tentative: DragPreview) => {
+    (itemId: string, tentative: DragPreview): { transform: DragPreview; endpoints: { moving: EndpointRef; target: EndpointRef } } | null => {
       if (!layout || !trackSystem) return null
       const item = layout.placedItems.find((placed) => placed.id === itemId)
       if (!item) return null
@@ -686,6 +827,7 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
 
       let bestDistance = Number.POSITIVE_INFINITY
       let bestTransform: DragPreview | null = null
+      let bestEndpoints: { moving: EndpointRef; target: EndpointRef } | null = null
 
       layout.placedItems.forEach((other) => {
         if (other.id === itemId) return
@@ -700,35 +842,47 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
           world: transformConnector(local, otherTransform),
         }))
 
-        movingConnectors.forEach(({ local, world }) => {
-          otherConnectors.forEach((target) => {
-            const dx = world.xMm - target.world.xMm
-            const dy = world.yMm - target.world.yMm
+        movingConnectors.forEach(({ key: movingKey, local, world: movingWorld }) => {
+          otherConnectors.forEach(({ key: targetKey, world: targetWorld }) => {
+            const dx = movingWorld.xMm - targetWorld.xMm
+            const dy = movingWorld.yMm - targetWorld.yMm
             const distance = Math.hypot(dx, dy)
             if (distance > SNAP_DISTANCE_MM) return
 
-            const angleDiff = normalizeAngle(world.directionDeg - (target.world.directionDeg + 180))
+            const angleDiff = normalizeAngle(movingWorld.directionDeg - (targetWorld.directionDeg + 180))
             if (Math.abs(angleDiff) > ANGLE_TOLERANCE_DEG) return
 
-            const desiredDirection = target.world.directionDeg + 180
-            const rotationDeg = normalizeAngle(desiredDirection - local.directionDeg)
+            // Calculate the rotation needed to align the moving connector with the target
+            // desiredDirection is where we want the connector to point in world space
+            const desiredDirection = targetWorld.directionDeg + 180
+            // Calculate the delta rotation needed from the current world direction
+            const deltaRotation = normalizeAngle(desiredDirection - movingWorld.directionDeg)
+            // Apply the delta to the current rotation to get the new rotation
+            const rotationDeg = normalizeAngle(tentative.rotationDeg + deltaRotation)
             const rotatedLocal = rotatePointLocal(local.xMm, local.yMm, rotationDeg)
 
             const newTransform: DragPreview = {
-              x: target.world.xMm - rotatedLocal.x,
-              y: target.world.yMm - rotatedLocal.y,
+              x: targetWorld.xMm - rotatedLocal.x,
+              y: targetWorld.yMm - rotatedLocal.y,
               rotationDeg,
             }
 
             if (distance < bestDistance) {
               bestDistance = distance
               bestTransform = newTransform
+              bestEndpoints = {
+                moving: { itemId, connectorKey: movingKey },
+                target: { itemId: other.id, connectorKey: targetKey },
+              }
             }
           })
         })
       })
 
-      return bestTransform
+      if (bestTransform && bestEndpoints) {
+        return { transform: bestTransform, endpoints: bestEndpoints }
+      }
+      return null
     },
     [componentMap, geometryCache, layout, listConnectorEntries, trackSystem],
   )
@@ -1070,17 +1224,19 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                   const labelY = local.yMm + labelOffsetY
                   const directionDeg = local.directionDeg ?? 0
                   return (
-                    <g key={`${item.id}-${key}`} pointerEvents="visibleStroke">
-                      <line
-                        x1={local.xMm}
-                        y1={local.yMm}
-                        x2={vectorEndX}
-                        y2={vectorEndY}
-                        stroke={endpointStroke}
-                        strokeWidth={isEndpointSelected || isConnectedEndpoint ? 2 : 1}
-                        opacity={0.7}
-                        pointerEvents="none"
-                      />
+                    <g key={`${item.id}-${key}`}>
+                      {debugMode && (
+                        <line
+                          x1={local.xMm}
+                          y1={local.yMm}
+                          x2={vectorEndX}
+                          y2={vectorEndY}
+                          stroke={endpointStroke}
+                          strokeWidth={isEndpointSelected || isConnectedEndpoint ? 2 : 1}
+                          opacity={0.7}
+                          pointerEvents="none"
+                        />
+                      )}
                       <circle
                         cx={local.xMm}
                         cy={local.yMm}
@@ -1089,6 +1245,7 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                         stroke={endpointStroke}
                         strokeWidth={isEndpointSelected || isConnectedEndpoint ? 2 : 1}
                         opacity={0.8}
+                        style={{ cursor: 'pointer' }}
                         onPointerDown={(event) => {
                           event.stopPropagation()
                           event.preventDefault()
@@ -1096,28 +1253,30 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                           updateEndpointSelection({ itemId: item.id, connectorKey: key }, additive)
                         }}
                       />
-                      <g pointerEvents="none">
-                        <rect
-                          x={labelX - 20}
-                          y={labelY - 8}
-                          width={40}
-                          height={20}
-                          fill="rgba(0, 0, 0, 0.7)"
-                          rx={2}
-                        />
-                        <text
-                          x={labelX}
-                          y={labelY}
-                          fontSize={8}
-                          fill="#ffffff"
-                          textAnchor="middle"
-                          dominantBaseline="middle"
-                          style={{ userSelect: 'none', fontFamily: 'monospace' }}
-                        >
-                          <tspan x={labelX} dy="0">{key}</tspan>
-                          <tspan x={labelX} dy="10">{directionDeg.toFixed(1)}°</tspan>
-                        </text>
-                      </g>
+                      {debugMode && (
+                        <g pointerEvents="none">
+                          <rect
+                            x={labelX - 20}
+                            y={labelY - 8}
+                            width={40}
+                            height={20}
+                            fill="rgba(0, 0, 0, 0.7)"
+                            rx={2}
+                          />
+                          <text
+                            x={labelX}
+                            y={labelY}
+                            fontSize={8}
+                            fill="#ffffff"
+                            textAnchor="middle"
+                            dominantBaseline="middle"
+                            style={{ userSelect: 'none', fontFamily: 'monospace' }}
+                          >
+                            <tspan x={labelX} dy="0">{key}</tspan>
+                            <tspan x={labelX} dy="10">{directionDeg.toFixed(1)}°</tspan>
+                          </text>
+                        </g>
+                      )}
                     </g>
                   )
                 })}
