@@ -133,10 +133,7 @@ const computeTextDimensions = (dx: number, dy: number, enforceSquare: boolean) =
   return { width, height }
 }
 
-const normalizeShapeType = (shape: CanvasShape): CanvasShape['type'] => {
-  const rawType = (shape as CanvasShape & { type: string }).type
-  return (rawType === 'square' ? 'rectangle' : rawType) as CanvasShape['type']
-}
+const normalizeShapeType = (shape: CanvasShape): CanvasShape['type'] => shape.type
 
 export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   {
@@ -326,7 +323,6 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
 
       if (editingTextId && !nextLayout.shapes.some((shape) => shape.id === editingTextId)) {
         setEditingTextId(null)
-        setEditingInputWorld(null)
       }
 
       setSelectedEndpoints((previous) =>
@@ -390,34 +386,6 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
         x: camera.x + (svgX / displayWidth) * viewWidth,
         y: camera.y + (svgY / displayHeight) * viewHeight,
         rect,
-      }
-    },
-    [camera.x, camera.y, viewWidth, viewHeight],
-  )
-
-  const worldPointToCanvasOffset = useCallback(
-    (point: { x: number; y: number }) => {
-      const svg = svgRef.current
-      const wrapper = canvasWrapperRef.current
-      if (!svg || !wrapper) return null
-      const rect = svg.getBoundingClientRect()
-      const wrapperRect = wrapper.getBoundingClientRect()
-      const scale = Math.min(rect.width / viewWidth, rect.height / viewHeight)
-      const displayWidth = viewWidth * scale
-      const displayHeight = viewHeight * scale
-      if (displayWidth === 0 || displayHeight === 0) {
-        return null
-      }
-      const offsetX = (rect.width - displayWidth) / 2
-      const offsetY = (rect.height - displayHeight) / 2
-      const normalizedX = (point.x - camera.x) / viewWidth
-      const normalizedY = (point.y - camera.y) / viewHeight
-      const svgX = normalizedX * displayWidth
-      const svgY = normalizedY * displayHeight
-      return {
-        left: rect.left - wrapperRect.left + offsetX + svgX,
-        top: rect.top - wrapperRect.top + offsetY + svgY,
-        scale,
       }
     },
     [camera.x, camera.y, viewWidth, viewHeight],
@@ -877,7 +845,6 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       editingTextIsNewRef.current = false
       setEditingTextValue('')
       setEditingTextId(null)
-      setEditingInputWorld(null)
     },
     [editingTextId, editingTextValue, onUpdateLayout, setSelectedShapeId],
   )
@@ -895,8 +862,25 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     [finishTextEditing],
   )
 
+  useEffect(() => {
+    if (!editingTextId) return
+    const handleWindowPointerDown = (event: PointerEvent) => {
+      const target = event.target instanceof Node ? event.target : null
+      if (canvasWrapperRef.current?.contains(target)) {
+        return
+      }
+      finishTextEditing(true)
+    }
+    window.addEventListener('pointerdown', handleWindowPointerDown)
+    return () => window.removeEventListener('pointerdown', handleWindowPointerDown)
+  }, [editingTextId, finishTextEditing])
+
   const handlePointerDown = (event: ReactPointerEvent<SVGSVGElement>) => {
     if (event.button !== 0) return
+    const pointerTarget = event.target instanceof Node ? event.target : null
+    if (editingTextId && !textInputRef.current?.contains(pointerTarget)) {
+      finishTextEditing(true)
+    }
 
     // Check if click is on an endpoint circle (handled by endpoint circle's onPointerDown)
     const targetElement = event.target instanceof Element ? event.target : null
@@ -1542,25 +1526,6 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     return () => window.removeEventListener('keydown', handleKey)
   }, [clearSelections, deleteSelectedItem, rotateSelected, selectedItemId, selectedShapeId])
 
-  const editingShape = editingTextId
-    ? (layout?.shapes.find((shape) => shape.id === editingTextId) as CanvasTextShape | undefined)
-    : undefined
-  const editingBounds =
-    editingShape || editingTextId
-      ? {
-          width: editingShape?.width ?? TEXT_DEFAULT_WIDTH_MM,
-          height: editingShape?.height ?? TEXT_DEFAULT_HEIGHT_MM,
-        }
-      : null
-  const editingTopLeft =
-    editingShape && editingBounds
-      ? { x: editingShape.x - editingBounds.width / 2, y: editingShape.y - editingBounds.height / 2 }
-      : null
-  const editingOffset = editingTopLeft ? worldPointToCanvasOffset(editingTopLeft) : null
-  const editingScale = editingOffset?.scale ?? 0
-  const editingWidthPx = editingBounds ? editingBounds.width * editingScale : 0
-  const editingHeightPx = editingBounds ? editingBounds.height * editingScale : 0
-
   if (!layout || !trackSystem) {
     return (
       <div className="canvas-container flex flex-1 items-center justify-center bg-slate-900 text-sm text-slate-300">
@@ -1786,29 +1751,60 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
               const halfWidth = textWidth / 2
               const halfHeight = textHeight / 2
               const transform = `translate(${x} ${y}) rotate(${rotationDeg})`
+              const isEditingText = editingTextId === shape.id
               return (
                 <g
                   key={shape.id}
                   data-shape={shape.id}
                   transform={transform}
                   style={{ cursor: 'pointer' }}
-                  onDoubleClick={(event) => {
-                    event.stopPropagation()
-                    event.preventDefault()
-                    startTextEditing(textShape, false)
-                  }}
                 >
-                  <text
-                    x={0}
-                    y={0}
-                    textAnchor="middle"
-                    dominantBaseline="middle"
-                    fontSize={textShape.fontSize}
-                    className="fill-slate-100"
-                  >
-                    {textShape.text}
-                  </text>
-                  {isSelected && (
+                  {isEditingText ? (
+                    <foreignObject
+                      x={-halfWidth}
+                      y={-halfHeight}
+                      width={textWidth}
+                      height={textHeight}
+                      pointerEvents="all"
+                    >
+                      <div
+                        ref={textInputRef}
+                        contentEditable
+                        suppressContentEditableWarning
+                        role="textbox"
+                        aria-multiline="true"
+                        onInput={(event) => setEditingTextValue(event.currentTarget.textContent ?? '')}
+                        onKeyDown={handleTextInputKeyDown}
+                        onBlur={() => finishTextEditing(true)}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        className="flex h-full w-full flex-col rounded border border-blue-500/60 bg-slate-900/80 px-1 py-0.5 text-xs text-slate-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500"
+                        style={{
+                          fontSize: `${textShape.fontSize}mm`,
+                          lineHeight: 1.1,
+                          whiteSpace: 'pre-wrap',
+                        }}
+                      >
+                        {editingTextValue}
+                      </div>
+                    </foreignObject>
+                  ) : (
+                    <text
+                      x={0}
+                      y={0}
+                      textAnchor="middle"
+                      dominantBaseline="middle"
+                      fontSize={textShape.fontSize}
+                      className="fill-slate-100"
+                      onDoubleClick={(event) => {
+                        event.stopPropagation()
+                        event.preventDefault()
+                        startTextEditing(textShape, false)
+                      }}
+                    >
+                      {textShape.text}
+                    </text>
+                  )}
+                  {isSelected && !isEditingText && (
                     <rect
                       x={-halfWidth}
                       y={-halfHeight}
@@ -1870,27 +1866,6 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
             )
           })()}
         </svg>
-        {editingShape && editingOffset && editingBounds && (
-          <div
-            ref={textInputRef}
-            contentEditable
-            suppressContentEditableWarning
-            role="textbox"
-            aria-multiline="true"
-            onInput={(event) => setEditingTextValue(event.currentTarget.textContent ?? '')}
-            onBlur={() => finishTextEditing(true)}
-            onKeyDown={handleTextInputKeyDown}
-            className="absolute overflow-auto rounded border border-blue-500/40 bg-slate-900/80 p-2 text-xs text-slate-100 shadow-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500"
-            style={{
-              left: editingOffset.left,
-              top: editingOffset.top,
-              width: Math.max(editingWidthPx, 40),
-              height: Math.max(editingHeightPx, 30),
-              whiteSpace: 'pre-wrap',
-              zIndex: 20,
-            }}
-          />
-        )}
       </div>
     </div>
   )

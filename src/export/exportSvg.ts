@@ -5,7 +5,7 @@ import type {
   TrackSystemDefinition,
 } from '../types/trackSystem'
 import { getComponentGeometry, rotatePointLocal } from '../geometry/trackGeometry'
-import { TEXT_CHAR_WIDTH_FACTOR, TEXT_DEFAULT_HEIGHT_MM, TEXT_DEFAULT_WIDTH_MM } from '../constants/layout'
+import { TEXT_DEFAULT_HEIGHT_MM, TEXT_DEFAULT_WIDTH_MM } from '../constants/layout'
 
 const TRACK_STROKE_WIDTH_MM = 28
 const EXPORT_BLACK = '#000'
@@ -121,18 +121,8 @@ const escapeXml = (value: string) =>
 
 const trackBoundsPadding = TRACK_STROKE_WIDTH_MM / 2 + ENDPOINT_CIRCLE_RADIUS
 
-const normalizeExportShapeType = (shape: CanvasShape): CanvasShape['type'] => {
-  const rawType = (shape as CanvasShape & { type: string }).type
-  return (rawType === 'square' ? 'rectangle' : rawType) as CanvasShape['type']
-}
-
-const estimateTextWidth = (text: string, fontSize: number) => {
-  const length = Math.max(text.length, 1)
-  return length * fontSize * TEXT_CHAR_WIDTH_FACTOR
-}
-
 const getShapeBounds = (shape: CanvasShape): Bounds => {
-  const shapeType = normalizeExportShapeType(shape)
+  const shapeType = shape.type
   const halfWidth = shape.width / 2
   if (shapeType === 'circle') {
     const radius = halfWidth
@@ -206,7 +196,7 @@ const getShapeBounds = (shape: CanvasShape): Bounds => {
 
 const buildShapeElement = (shape: CanvasShape) => {
   const rotationTransform = `rotate(${shape.rotationDeg} ${shape.x} ${shape.y})`
-  const shapeType = normalizeExportShapeType(shape)
+  const shapeType = shape.type
 
   if (shapeType === 'circle') {
     const radius = shape.width / 2
