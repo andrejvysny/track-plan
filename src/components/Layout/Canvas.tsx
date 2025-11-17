@@ -10,7 +10,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type WheelEvent,
 } from 'react'
-import type { LayoutState, PlacedItem } from '../../types/layout'
+import type { EndpointConnection, LayoutState, PlacedItem } from '../../types/layout'
 import type {
   ConnectorKey,
   EndpointRef,
@@ -26,6 +26,7 @@ import {
   transformConnector,
 } from '../../geometry/trackGeometry'
 import { computeConnectionTransform } from '../../geometry/trackEndpoint'
+import { connectionHasEndpoint, connectionMatchesEndpoints } from '../../utils/connectionUtils'
 import { ROTATION_STEP_DEG } from '../../constants/layout'
 
 type CanvasProps = {
@@ -38,6 +39,7 @@ type CanvasProps = {
 
 export interface CanvasHandle {
   connectSelectedEndpoints(): void
+  disconnectSelectedEndpoints(): void
   rotateSelected(deltaDeg: number): void
   deleteSelectedItem(): void
 }
@@ -79,8 +81,12 @@ const ENDPOINT_CLICK_DISTANCE_MM = 10
 const ENDPOINT_CIRCLE_RADIUS = 4
 const TRACK_STROKE_WIDTH_MM = 28
 const TRACK_FILL_COLOR = '#1f2937'
-const TRACK_BORDER_COLOR = '#ffffff'
-const LABEL_VERTICAL_OFFSET_MM = 18
+const TRACK_BORDER_COLOR = 'darkgrey'
+const SELECTED_TRACK_BORDER_COLOR = '#60a5fa'
+const SELECTED_ENDPOINT_COLOR = '#dc2626'
+const CONNECTED_ENDPOINT_COLOR = '#16a34a'
+const GROUNDED_TRACK_BORDER_COLOR = '#facc15'
+const LABEL_OFFSET_MM = 18
 
 export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   { layout, trackSystem, onUpdateLayout, onSelectedItemChange, onSelectedEndpointsChange },
@@ -96,6 +102,8 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   const [dragStartClient, setDragStartClient] = useState<ClientPoint | null>(null)
   const [dragStartTransform, setDragStartTransform] = useState<DragPreview | null>(null)
   const [dragPreview, setDragPreview] = useState<DragPreview | null>(null)
+  const [dragGroupIds, setDragGroupIds] = useState<string[] | null>(null)
+  const [dragGroupDelta, setDragGroupDelta] = useState<{ x: number; y: number } | null>(null)
 
   const [isPanning, setIsPanning] = useState(false)
   const [camera, setCamera] = useState({
@@ -103,6 +111,14 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     x: -VIEWPORT_SIZE / 2,
     y: -VIEWPORT_SIZE / 2,
   })
+
+  const dragGroupStartTransformsRef = useRef<Record<string, DragPreview> | null>(null)
+
+  const itemMap = useMemo(() => {
+    const map = new Map<string, PlacedItem>()
+    layout?.placedItems.forEach((item) => map.set(item.id, item))
+    return map
+  }, [layout])
 
   const componentMap = useMemo(() => {
     if (!trackSystem) return new Map<string, TrackComponentDefinition>()
@@ -118,6 +134,84 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     })
     return cache
   }, [componentMap])
+
+  const connections = layout?.connections ?? []
+
+  const findConnectionForEndpoint = useCallback(
+    (endpoint: EndpointRef) => connections.find((connection) => connectionHasEndpoint(connection, endpoint)),
+    [connections],
+  )
+
+  const connectionGraph = useMemo(() => {
+    const graph = new Map<string, Set<string>>()
+    connections.forEach((connection) => {
+      const [first, second] = connection.endpoints
+      if (first.itemId === second.itemId) return
+      if (!graph.has(first.itemId)) {
+        graph.set(first.itemId, new Set())
+      }
+      if (!graph.has(second.itemId)) {
+        graph.set(second.itemId, new Set())
+      }
+      graph.get(first.itemId)!.add(second.itemId)
+      graph.get(second.itemId)!.add(first.itemId)
+    })
+    return graph
+  }, [connections])
+
+  const getConnectedGroupIds = useCallback(
+    (itemId: string) => {
+      const result = new Set<string>()
+      const queue = [itemId]
+      while (queue.length) {
+        const current = queue.shift()
+        if (!current || result.has(current)) continue
+        result.add(current)
+        const neighbors = connectionGraph.get(current)
+        if (neighbors) {
+          neighbors.forEach((neighbor) => queue.push(neighbor))
+        }
+      }
+      if (!result.size) {
+        result.add(itemId)
+      }
+      return Array.from(result)
+    },
+    [connectionGraph],
+  )
+
+  const isItemGrounded = useCallback(
+    (itemId: string) => itemMap.get(itemId)?.isGrounded ?? false,
+    [itemMap],
+  )
+
+  const connectedEndpointKeys = useMemo(() => {
+    const set = new Set<string>()
+    connections.forEach((connection) => {
+      connection.endpoints.forEach(({ itemId, connectorKey }) => {
+        set.add(`${itemId}:${connectorKey}`)
+      })
+    })
+    return set
+  }, [connections])
+
+  const connectedItemIds = useMemo(() => {
+    const set = new Set<string>()
+    connections.forEach((connection) => {
+      connection.endpoints.forEach(({ itemId }) => {
+        set.add(itemId)
+      })
+    })
+    return set
+  }, [connections])
+
+  const isEndpointConnected = useCallback(
+    (itemId: string, connectorKey: ConnectorKey) =>
+      connectedEndpointKeys.has(`${itemId}:${connectorKey}`),
+    [connectedEndpointKeys],
+  )
+
+  const isItemConnected = useCallback((itemId: string) => connectedItemIds.has(itemId), [connectedItemIds])
 
   const capturePointer = useCallback((pointerId: number) => {
     const svg = svgRef.current
@@ -172,26 +266,49 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
 
   useEffect(() => {
     const handlePointerUp = () => {
-      if (draggingItemId && dragPreview) {
-        onUpdateLayout((previous) => ({
-          ...previous,
-          placedItems: previous.placedItems.map((item) =>
-            item.id === draggingItemId
-              ? {
-                  ...item,
-                  x: dragPreview.x,
-                  y: dragPreview.y,
-                  rotationDeg: normalizeAngle(dragPreview.rotationDeg),
-                }
-              : item,
-          ),
-        }))
+      if (draggingItemId) {
+        const groupStarts = dragGroupStartTransformsRef.current
+        const hasGroupDelta =
+          dragGroupDelta && (Math.abs(dragGroupDelta.x) > 1e-6 || Math.abs(dragGroupDelta.y) > 1e-6)
+        if (groupStarts && dragGroupDelta && hasGroupDelta) {
+          onUpdateLayout((previous) => ({
+            ...previous,
+            placedItems: previous.placedItems.map((item) => {
+              const start = groupStarts[item.id]
+              if (!start) {
+                return item
+              }
+              return {
+                ...item,
+                x: start.x + dragGroupDelta.x,
+                y: start.y + dragGroupDelta.y,
+              }
+            }),
+          }))
+        } else if (dragPreview) {
+          onUpdateLayout((previous) => ({
+            ...previous,
+            placedItems: previous.placedItems.map((item) =>
+              item.id === draggingItemId
+                ? {
+                    ...item,
+                    x: dragPreview.x,
+                    y: dragPreview.y,
+                    rotationDeg: normalizeAngle(dragPreview.rotationDeg),
+                  }
+                : item,
+            ),
+          }))
+        }
       }
 
       setDraggingItemId(null)
       setDragStartClient(null)
       setDragStartTransform(null)
       setDragPreview(null)
+      setDragGroupIds(null)
+      setDragGroupDelta(null)
+      dragGroupStartTransformsRef.current = null
       setIsPanning(false)
       lastPointerRef.current = null
       releasePointer()
@@ -203,7 +320,7 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       window.removeEventListener('pointerup', handlePointerUp)
       window.removeEventListener('pointerleave', handlePointerUp)
     }
-  }, [draggingItemId, dragPreview, onUpdateLayout, releasePointer])
+  }, [dragGroupDelta, dragPreview, draggingItemId, onUpdateLayout, releasePointer])
 
   const viewWidth = useMemo(() => VIEWPORT_SIZE / camera.scale, [camera.scale])
   const viewHeight = useMemo(() => VIEWPORT_SIZE / camera.scale, [camera.scale])
@@ -253,12 +370,20 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
 
   const getItemTransform = useCallback(
     (item: PlacedItem): DragPreview => {
+      const base = dragGroupStartTransformsRef.current?.[item.id]
+      if (base && dragGroupDelta && dragGroupIds?.includes(item.id)) {
+        return {
+          x: base.x + dragGroupDelta.x,
+          y: base.y + dragGroupDelta.y,
+          rotationDeg: base.rotationDeg,
+        }
+      }
       if (draggingItemId === item.id && dragPreview) {
         return dragPreview
       }
       return { x: item.x, y: item.y, rotationDeg: item.rotationDeg }
     },
-    [dragPreview, draggingItemId],
+    [dragGroupDelta, dragGroupIds, dragPreview, draggingItemId],
   )
 
   const listConnectorEntries = useCallback((geometry: ReturnType<typeof getComponentGeometry>): ConnectorEntry[] => {
@@ -313,33 +438,44 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   )
 
   // Endpoint selection toggles connectors with Shift/Ctrl so users can aim two legs before running Connect.
-  const updateEndpointSelection = useCallback((endpoint: EndpointRef, additive: boolean) => {
-    setSelectedEndpoints((previous) => {
-      const exists = previous.some(
-        (candidate) => candidate.itemId === endpoint.itemId && candidate.connectorKey === endpoint.connectorKey,
-      )
+  const updateEndpointSelection = useCallback(
+    (endpoint: EndpointRef, additive: boolean) => {
+      setSelectedEndpoints((previous) => {
+        const exists = previous.some(
+          (candidate) => candidate.itemId === endpoint.itemId && candidate.connectorKey === endpoint.connectorKey,
+        )
 
-      let next: EndpointRef[]
-      if (additive) {
-        if (exists) {
-          next = previous.filter(
-            (entry) => !(entry.itemId === endpoint.itemId && entry.connectorKey === endpoint.connectorKey),
-          )
+        let next: EndpointRef[]
+        if (additive) {
+          if (exists) {
+            next = previous.filter(
+              (entry) => !(entry.itemId === endpoint.itemId && entry.connectorKey === endpoint.connectorKey),
+            )
+          } else {
+            next = [...previous, endpoint]
+            if (next.length > 2) {
+              next = next.slice(next.length - 2)
+            }
+          }
         } else {
-          next = [...previous, endpoint]
-          if (next.length > 2) {
-            next = next.slice(next.length - 2)
+          next = [endpoint]
+        }
+
+        const latest = next[next.length - 1] ?? null
+        if (!additive && latest) {
+          const connection = findConnectionForEndpoint(latest)
+          if (connection) {
+            setSelectedItemId(latest.itemId)
+            return [...connection.endpoints]
           }
         }
-      } else {
-        next = [endpoint]
-      }
 
-      const latest = next[next.length - 1] ?? null
-      setSelectedItemId(latest?.itemId ?? null)
-      return next
-    })
-  }, [])
+        setSelectedItemId(latest?.itemId ?? null)
+        return next
+      })
+    },
+    [findConnectionForEndpoint],
+  )
 
   const clearSelections = useCallback(() => {
     setSelectedItemId(null)
@@ -357,6 +493,12 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
         updateEndpointSelection(nearest.ref, additive)
         return
       }
+    }
+
+    const targetElement = event.target instanceof Element ? event.target : null
+    const clickedTrackItem = targetElement?.closest('[data-track-item]') ?? false
+    if (!clickedTrackItem) {
+      clearSelections()
     }
 
     if (event.target !== svgRef.current) return
@@ -383,7 +525,17 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
         rotationDeg: dragStartTransform.rotationDeg,
       }
       const snapped = computeSnappedTransform(draggingItemId, tentative)
-      setDragPreview(snapped ?? tentative)
+      const nextTransform = snapped ?? tentative
+      setDragPreview(nextTransform)
+      const primaryStart = dragGroupStartTransformsRef.current?.[draggingItemId]
+      if (primaryStart) {
+        setDragGroupDelta({
+          x: nextTransform.x - primaryStart.x,
+          y: nextTransform.y - primaryStart.y,
+        })
+      } else {
+        setDragGroupDelta(null)
+      }
       return
     }
 
@@ -480,19 +632,40 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   }
 
   const handleItemPointerDown = (
-    event: ReactPointerEvent<SVGGElement>,
+    event: ReactPointerEvent<SVGElement>,
     itemId: string,
     initialTransform: DragPreview,
   ) => {
     event.stopPropagation()
     if (event.button !== 0) return
-    capturePointer(event.pointerId)
+    const groupIds = getConnectedGroupIds(itemId)
+    const groupHasGrounded = groupIds.some((id) => isItemGrounded(id))
     setSelectedItemId(itemId)
     setSelectedEndpoints([])
+    if (groupHasGrounded) {
+      return
+    }
+
+    capturePointer(event.pointerId)
     setDraggingItemId(itemId)
     setDragStartClient({ x: event.clientX, y: event.clientY })
     setDragStartTransform(initialTransform)
     setDragPreview(initialTransform)
+    setDragGroupIds(groupIds)
+    setDragGroupDelta({ x: 0, y: 0 })
+
+    const startTransforms: Record<string, DragPreview> = {}
+    groupIds.forEach((id) => {
+      const groupedItem = itemMap.get(id)
+      if (groupedItem) {
+        startTransforms[id] = {
+          x: groupedItem.x,
+          y: groupedItem.y,
+          rotationDeg: groupedItem.rotationDeg,
+        }
+      }
+    })
+    dragGroupStartTransformsRef.current = startTransforms
   }
 
   const computeSnappedTransform = useCallback(
@@ -563,6 +736,7 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   const rotateSelected = useCallback(
     (deltaDeg: number) => {
       if (!layout || !selectedItemId) return
+      if (isItemConnected(selectedItemId) || isItemGrounded(selectedItemId)) return
 
       const currentItem = layout.placedItems.find((item) => item.id === selectedItemId)
       if (!currentItem) return
@@ -612,14 +786,23 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       onUpdateLayout,
       selectedEndpoints,
       selectedItemId,
+      isItemConnected,
+      isItemGrounded,
     ],
   )
 
   const deleteSelectedItem = useCallback(() => {
     if (!layout || !selectedItemId) return
+
+    const filterConnections = (connections?: EndpointConnection[]) =>
+      (connections ?? []).filter((connection) =>
+        connection.endpoints.every((endpoint) => endpoint.itemId !== selectedItemId),
+      )
+
     onUpdateLayout((previous) => ({
       ...previous,
       placedItems: previous.placedItems.filter((item) => item.id !== selectedItemId),
+      connections: filterConnections(previous.connections),
     }))
     setSelectedItemId(null)
     setSelectedEndpoints([])
@@ -630,8 +813,31 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     if (!layout || !trackSystem) return
     if (selectedEndpoints.length !== 2) return
 
-    const [fixedRef, movingRef] = selectedEndpoints
-    if (fixedRef.itemId === movingRef.itemId) return
+    const [firstRef, secondRef] = selectedEndpoints
+    if (firstRef.itemId === secondRef.itemId) return
+
+    const firstGrounded = isItemGrounded(firstRef.itemId)
+    const secondGrounded = isItemGrounded(secondRef.itemId)
+
+    let fixedRef: EndpointRef | undefined
+    let movingRef: EndpointRef | undefined
+
+    if (firstGrounded && !secondGrounded) {
+      fixedRef = firstRef
+      movingRef = secondRef
+    } else if (!firstGrounded && secondGrounded) {
+      fixedRef = secondRef
+      movingRef = firstRef
+    } else {
+      const selectedRef =
+        selectedEndpoints.find((endpoint) => endpoint.itemId === selectedItemId) ?? firstRef
+      movingRef = selectedRef
+      fixedRef = selectedRef === firstRef ? secondRef : firstRef
+    }
+
+    if (!fixedRef || !movingRef) return
+    if (movingRef.itemId === fixedRef.itemId) return
+    if (isItemGrounded(movingRef.itemId)) return
 
     const fixedItem = layout.placedItems.find((item) => item.id === fixedRef.itemId)
     const movingItem = layout.placedItems.find((item) => item.id === movingRef.itemId)
@@ -646,7 +852,15 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     const movingConnectorLocal = getConnectorByKey(movingGeometry, movingRef.connectorKey)
     if (!fixedConnectorLocal || !movingConnectorLocal) return
 
+    if (
+      isEndpointConnected(fixedRef.itemId, fixedRef.connectorKey) ||
+      isEndpointConnected(movingRef.itemId, movingRef.connectorKey)
+    ) {
+      return
+    }
+
     const transform = computeConnectionTransform(fixedItem, fixedConnectorLocal, movingConnectorLocal)
+    const newConnection: EndpointConnection = { endpoints: [fixedRef, movingRef] }
 
     onUpdateLayout((previous) => ({
       ...previous,
@@ -660,17 +874,42 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
             }
           : item,
       ),
+      connections: [...(previous.connections ?? []), newConnection],
     }))
-  }, [getConnectorByKey, geometryCache, layout, onUpdateLayout, selectedEndpoints, trackSystem])
+  }, [
+    getConnectorByKey,
+    geometryCache,
+    isEndpointConnected,
+    isItemGrounded,
+    layout,
+    onUpdateLayout,
+    selectedEndpoints,
+    selectedItemId,
+    trackSystem,
+  ])
+
+  const disconnectSelectedEndpoints = useCallback(() => {
+    if (!layout || selectedEndpoints.length !== 2) return
+    const connectionIndex = (layout.connections ?? []).findIndex((connection) =>
+      connectionMatchesEndpoints(connection, selectedEndpoints),
+    )
+    if (connectionIndex === -1) return
+
+    onUpdateLayout((previous) => ({
+      ...previous,
+      connections: (previous.connections ?? []).filter((_, idx) => idx !== connectionIndex),
+    }))
+  }, [layout, onUpdateLayout, selectedEndpoints])
 
   useImperativeHandle(
     ref,
     () => ({
       connectSelectedEndpoints,
+      disconnectSelectedEndpoints,
       rotateSelected,
       deleteSelectedItem,
     }),
-    [connectSelectedEndpoints, deleteSelectedItem, rotateSelected],
+    [connectSelectedEndpoints, deleteSelectedItem, disconnectSelectedEndpoints, rotateSelected],
   )
 
   useEffect(() => {
@@ -745,56 +984,81 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
 
             const transform = getItemTransform(item)
             const isSelected = selectedItemId === item.id
+            const isGrounded = item.isGrounded ?? false
             const connectorEntries = listConnectorEntries(geometry)
             const labelAnchor = computeLabelAnchor(connectorEntries)
+            const trackStrokeColor = isGrounded && !isSelected ? GROUNDED_TRACK_BORDER_COLOR : isSelected ? SELECTED_TRACK_BORDER_COLOR : TRACK_BORDER_COLOR
+            const rotatedLabelAnchor = rotatePointLocal(
+              labelAnchor.xMm,
+              labelAnchor.yMm,
+              transform.rotationDeg,
+            )
+            const labelOffsetPoint = rotatePointLocal(0, -LABEL_OFFSET_MM, transform.rotationDeg)
+            const labelX = transform.x + rotatedLabelAnchor.x + labelOffsetPoint.x
+            const labelY = transform.y + rotatedLabelAnchor.y + labelOffsetPoint.y
 
             return (
-              <g
-                key={item.id}
-                transform={`translate(${transform.x} ${transform.y}) rotate(${transform.rotationDeg})`}
-                onPointerDown={(event) => handleItemPointerDown(event, item.id, transform)}
-              >
-                <path
-                  d={geometry.buildPathD()}
-                  fill={TRACK_FILL_COLOR}
-                  stroke={isSelected ? '#60a5fa' : TRACK_BORDER_COLOR}
-                  strokeWidth={TRACK_STROKE_WIDTH_MM}
-                  strokeLinecap="butt"
-                  strokeLinejoin="miter"
-                />
-                <text
-                  x={labelAnchor.xMm}
-                  y={labelAnchor.yMm - LABEL_VERTICAL_OFFSET_MM}
-                  textAnchor="middle"
-                  fontSize={10}
-                  className="fill-gray-300"
+              <g key={item.id}>
+                <g
+                  data-track-item={item.id}
+                  transform={`translate(${transform.x} ${transform.y}) rotate(${transform.rotationDeg})`}
+                  onPointerDown={(event) => handleItemPointerDown(event, item.id, transform)}
                 >
-                  {component.id}
-                </text>
+                  <path
+                    d={geometry.buildPathD()}
+                    fill={TRACK_FILL_COLOR}
+                    stroke={trackStrokeColor}
+                    strokeWidth={TRACK_STROKE_WIDTH_MM}
+                    strokeLinecap="butt"
+                    strokeLinejoin="miter"
+                  />
                 {connectorEntries.map(({ key, local }) => {
                   const isEndpointSelected = selectedEndpoints.some(
                     (endpoint) => endpoint.itemId === item.id && endpoint.connectorKey === key,
                   )
+                  const isConnectedEndpoint = isEndpointConnected(item.id, key)
+                  const endpointFill = isEndpointSelected
+                    ? SELECTED_ENDPOINT_COLOR
+                    : isConnectedEndpoint
+                    ? CONNECTED_ENDPOINT_COLOR
+                    : 'transparent'
+                  const endpointStroke = isEndpointSelected
+                    ? SELECTED_ENDPOINT_COLOR
+                    : isConnectedEndpoint
+                    ? CONNECTED_ENDPOINT_COLOR
+                    : '#cbd5f5'
                   return (
                     <circle
                       key={`${item.id}-${key}`}
                       cx={local.xMm}
                       cy={local.yMm}
                       r={ENDPOINT_CIRCLE_RADIUS}
-                      fill={isEndpointSelected ? '#2563eb' : 'transparent'}
-                      stroke={isEndpointSelected ? '#93c5fd' : '#cbd5f5'}
-                      strokeWidth={isEndpointSelected ? 2 : 1}
+                      fill={endpointFill}
+                      stroke={endpointStroke}
+                      strokeWidth={isEndpointSelected || isConnectedEndpoint ? 2 : 1}
                       opacity={0.8}
                       pointerEvents="visibleStroke"
                       onPointerDown={(event) => {
                         event.stopPropagation()
                         event.preventDefault()
-                        const additive = event.shiftKey || event.ctrlKey || event.metaKey
+                        const additive = event.shiftKey
                         updateEndpointSelection({ itemId: item.id, connectorKey: key }, additive)
                       }}
                     />
                   )
                 })}
+                </g>
+                <text
+                  data-track-item={item.id}
+                  x={labelX}
+                  y={labelY}
+                  textAnchor="middle"
+                  fontSize={10}
+                  className="fill-gray-300"
+                  onPointerDown={(event) => handleItemPointerDown(event, item.id, transform)}
+                >
+                  {component.id}
+                </text>
               </g>
             )
           })}

@@ -10,6 +10,7 @@ export function createDefaultLayoutState(): LayoutState {
     activeTrackSystemId: pikoA_H0.id,
     trackSystems: [pikoA_H0],
     placedItems: [],
+    connections: [],
   }
 }
 

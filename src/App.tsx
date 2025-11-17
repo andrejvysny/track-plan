@@ -8,6 +8,7 @@ import { useProjectsState } from './state/projectsState'
 import { buildLayoutSvgString } from './export/exportSvg'
 import type { EndpointRef } from './types/trackSystem'
 import { ROTATION_STEP_DEG } from './constants/layout'
+import { connectionMatchesEndpoints } from './utils/connectionUtils'
 
 function App() {
   const {
@@ -33,6 +34,20 @@ function App() {
     [activeLayout],
   )
 
+  const selectedItem = useMemo(
+    () => activeLayout?.placedItems.find((item) => item.id === selectedItemId) ?? null,
+    [activeLayout, selectedItemId],
+  )
+  const selectedItemConnected = useMemo(() => {
+    if (!selectedItemId || !activeLayout) return false
+    return Boolean(
+      activeLayout.connections?.some((connection) =>
+        connection.endpoints.some((endpoint) => endpoint.itemId === selectedItemId),
+      ),
+    )
+  }, [activeLayout, selectedItemId])
+  const selectedItemIsGrounded = Boolean(selectedItem?.isGrounded)
+
   const handleRenameProject = (id: string) => {
     const project = projectsState.projects.find((candidate) => candidate.id === id)
     const currentName = project?.name ?? ''
@@ -56,6 +71,7 @@ function App() {
     updateActiveProjectLayout((layout) => ({
       ...layout,
       placedItems: [],
+      connections: [],
     }))
   }
 
@@ -121,13 +137,37 @@ function App() {
     canvasRef.current?.connectSelectedEndpoints()
   }
 
+  const handleDisconnectEndpoints = () => {
+    canvasRef.current?.disconnectSelectedEndpoints()
+  }
+
   const handleDeleteSelected = () => {
     canvasRef.current?.deleteSelectedItem()
   }
 
-  const canRotateSelection = Boolean(selectedItemId)
+  const handleToggleGrounded = () => {
+    if (!selectedItemId) return
+    updateActiveProjectLayout((layout) => ({
+      ...layout,
+      placedItems: layout.placedItems.map((item) =>
+        item.id === selectedItemId ? { ...item, isGrounded: !item.isGrounded } : item,
+      ),
+    }))
+  }
+
+  const canRotateSelection = Boolean(selectedItemId) && !selectedItemConnected && !selectedItemIsGrounded
   const canDeleteSelection = Boolean(selectedItemId)
   const canConnectEndpoints = selectedEndpoints.length === 2
+  const canDisconnectEndpoints = useMemo(() => {
+    if (!activeLayout) return false
+    if (selectedEndpoints.length !== 2) return false
+    return Boolean(
+      activeLayout.connections?.some((connection) =>
+        connectionMatchesEndpoints(connection, selectedEndpoints),
+      ),
+    )
+  }, [activeLayout, selectedEndpoints])
+  const canToggleGroundSelection = Boolean(selectedItemId)
 
   return (
     <div className="app-root flex h-screen flex-col bg-slate-950 text-slate-100">
@@ -140,12 +180,17 @@ function App() {
         onExportSvg={handleExportSvg}
         onImport={handleImportStub}
         onConnectEndpoints={handleConnectEndpoints}
+        onDisconnectEndpoints={handleDisconnectEndpoints}
         onRotateSelectedLeft={() => handleRotateSelected(-ROTATION_STEP_DEG)}
         onRotateSelectedRight={() => handleRotateSelected(ROTATION_STEP_DEG)}
         onDeleteSelected={handleDeleteSelected}
+        onToggleGrounded={handleToggleGrounded}
         canConnectEndpoints={canConnectEndpoints}
+        canDisconnectEndpoints={canDisconnectEndpoints}
         canRotateSelection={canRotateSelection}
         canDeleteSelection={canDeleteSelection}
+        canToggleGroundSelection={canToggleGroundSelection}
+        isSelectionGrounded={selectedItemIsGrounded}
       />
 
       <div className="app-main-row flex flex-1 min-h-0 overflow-hidden">
