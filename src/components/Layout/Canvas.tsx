@@ -7,10 +7,18 @@ import {
   useRef,
   useState,
   type DragEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type WheelEvent,
 } from 'react'
-import type { CanvasShape, EndpointConnection, LayoutState, PlacedItem, ShapeType } from '../../types/layout'
+import type {
+  CanvasShape,
+  CanvasTextShape,
+  EndpointConnection,
+  LayoutState,
+  PlacedItem,
+  ShapeType,
+} from '../../types/layout'
 import type {
   ConnectorKey,
   EndpointRef,
@@ -27,7 +35,13 @@ import {
 } from '../../geometry/trackGeometry'
 import { computeConnectionTransform } from '../../geometry/trackEndpoint'
 import { connectionHasEndpoint, connectionMatchesEndpoints } from '../../utils/connectionUtils'
-import { ROTATION_STEP_DEG } from '../../constants/layout'
+import {
+  ROTATION_STEP_DEG,
+  TEXT_CHAR_WIDTH_FACTOR,
+  TEXT_FONT_SIZE_MM,
+  TEXT_DEFAULT_HEIGHT_MM,
+  TEXT_DEFAULT_WIDTH_MM,
+} from '../../constants/layout'
 
 type CanvasProps = {
   layout: LayoutState | null
@@ -37,6 +51,8 @@ type CanvasProps = {
   onSelectedEndpointsChange?: (endpoints: EndpointRef[]) => void
   debugMode?: boolean
   drawingTool?: ShapeType | null
+  undo: () => void
+  redo: () => void
 }
 
 export interface CanvasHandle {
@@ -94,13 +110,52 @@ const SHAPE_STROKE_COLOR = 'white'
 const SHAPE_STROKE_WIDTH = 2
 const SELECTED_SHAPE_STROKE_COLOR = '#60a5fa'
 
+const estimateTextWidth = (text: string, fontSize: number) => {
+  const length = Math.max(text.length, 1)
+  return length * fontSize * TEXT_CHAR_WIDTH_FACTOR
+}
+
+const computeRectangleDimensions = (dx: number, dy: number, enforceSquare: boolean) => {
+  if (enforceSquare) {
+    const size = Math.max(dx, dy)
+    return { width: size, height: size }
+  }
+  return { width: dx, height: dy }
+}
+
+const computeTextDimensions = (dx: number, dy: number, enforceSquare: boolean) => {
+  const width = Math.max(dx, TEXT_DEFAULT_WIDTH_MM)
+  const height = Math.max(dy, TEXT_DEFAULT_HEIGHT_MM)
+  if (enforceSquare) {
+    const size = Math.max(width, height)
+    return { width: size, height: size }
+  }
+  return { width, height }
+}
+
+const normalizeShapeType = (shape: CanvasShape): CanvasShape['type'] => {
+  const rawType = (shape as CanvasShape & { type: string }).type
+  return (rawType === 'square' ? 'rectangle' : rawType) as CanvasShape['type']
+}
+
 export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
-  { layout, trackSystem, onUpdateLayout, onSelectedItemChange, onSelectedEndpointsChange, debugMode = false, drawingTool = null },
+  {
+    layout,
+    trackSystem,
+    onUpdateLayout,
+    onSelectedItemChange,
+    onSelectedEndpointsChange,
+    debugMode = false,
+    drawingTool = null,
+    undo,
+    redo,
+  },
   ref,
 ) {
   const svgRef = useRef<SVGSVGElement | null>(null)
   const lastPointerRef = useRef<ClientPoint | null>(null)
   const capturedPointerIdRef = useRef<number | null>(null)
+  const canvasWrapperRef = useRef<HTMLDivElement | null>(null)
 
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null)
   const [selectedShapeId, setSelectedShapeId] = useState<string | null>(null)
@@ -118,6 +173,11 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   const [isDrawing, setIsDrawing] = useState(false)
   const [drawStart, setDrawStart] = useState<{ x: number; y: number } | null>(null)
   const [drawCurrent, setDrawCurrent] = useState<{ x: number; y: number } | null>(null)
+  const [drawShiftActive, setDrawShiftActive] = useState(false)
+  const [editingTextId, setEditingTextId] = useState<string | null>(null)
+  const [editingTextValue, setEditingTextValue] = useState('')
+  const editingTextIsNewRef = useRef(false)
+  const textInputRef = useRef<HTMLDivElement | null>(null)
 
   const [isPanning, setIsPanning] = useState(false)
   const [camera, setCamera] = useState({
@@ -264,11 +324,16 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
         setSelectedShapeId(null)
       }
 
+      if (editingTextId && !nextLayout.shapes.some((shape) => shape.id === editingTextId)) {
+        setEditingTextId(null)
+        setEditingInputWorld(null)
+      }
+
       setSelectedEndpoints((previous) =>
         previous.filter((endpoint) => nextLayout.placedItems.some((item) => item.id === endpoint.itemId)),
       )
     },
-    [selectedItemId, selectedShapeId],
+    [selectedItemId, selectedShapeId, editingTextId],
   )
 
   useEffect(() => {
@@ -282,6 +347,26 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   useEffect(() => {
     onSelectedEndpointsChange?.(selectedEndpoints)
   }, [onSelectedEndpointsChange, selectedEndpoints])
+
+  useEffect(() => {
+    const element = textInputRef.current
+    if (!element || editingTextId === null) {
+      return
+    }
+
+    if (element.textContent !== editingTextValue) {
+      element.textContent = editingTextValue
+    }
+    element.focus()
+    const selection = window.getSelection()
+    if (selection) {
+      const range = document.createRange()
+      range.selectNodeContents(element)
+      range.collapse(false)
+      selection.removeAllRanges()
+      selection.addRange(range)
+    }
+  }, [editingTextId, editingTextValue])
 
   const viewWidth = useMemo(() => VIEWPORT_SIZE / camera.scale, [camera.scale])
   const viewHeight = useMemo(() => VIEWPORT_SIZE / camera.scale, [camera.scale])
@@ -305,6 +390,34 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
         x: camera.x + (svgX / displayWidth) * viewWidth,
         y: camera.y + (svgY / displayHeight) * viewHeight,
         rect,
+      }
+    },
+    [camera.x, camera.y, viewWidth, viewHeight],
+  )
+
+  const worldPointToCanvasOffset = useCallback(
+    (point: { x: number; y: number }) => {
+      const svg = svgRef.current
+      const wrapper = canvasWrapperRef.current
+      if (!svg || !wrapper) return null
+      const rect = svg.getBoundingClientRect()
+      const wrapperRect = wrapper.getBoundingClientRect()
+      const scale = Math.min(rect.width / viewWidth, rect.height / viewHeight)
+      const displayWidth = viewWidth * scale
+      const displayHeight = viewHeight * scale
+      if (displayWidth === 0 || displayHeight === 0) {
+        return null
+      }
+      const offsetX = (rect.width - displayWidth) / 2
+      const offsetY = (rect.height - displayHeight) / 2
+      const normalizedX = (point.x - camera.x) / viewWidth
+      const normalizedY = (point.y - camera.y) / viewHeight
+      const svgX = normalizedX * displayWidth
+      const svgY = normalizedY * displayHeight
+      return {
+        left: rect.left - wrapperRect.left + offsetX + svgX,
+        top: rect.top - wrapperRect.top + offsetY + svgY,
+        scale,
       }
     },
     [camera.x, camera.y, viewWidth, viewHeight],
@@ -466,50 +579,64 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       if (isDrawing && drawStart && drawCurrent && drawingTool) {
         const dx = Math.abs(drawCurrent.x - drawStart.x)
         const dy = Math.abs(drawCurrent.y - drawStart.y)
-        
-        // Only create shape if there's meaningful size
-        if (dx > 1 || dy > 1) {
-          let width: number
-          let height: number | undefined
-          let centerX: number
-          let centerY: number
+        const centerX = (drawStart.x + drawCurrent.x) / 2
+        const centerY = (drawStart.y + drawCurrent.y) / 2
+        let newShape: CanvasShape | null = null
 
-          if (drawingTool === 'circle') {
+        if (drawingTool === 'circle') {
+          if (dx > 1 || dy > 1) {
             const radius = Math.hypot(dx, dy) / 2
-            width = radius * 2
-            centerX = (drawStart.x + drawCurrent.x) / 2
-            centerY = (drawStart.y + drawCurrent.y) / 2
-          } else if (drawingTool === 'square') {
-            const size = Math.max(dx, dy)
-            width = size
-            centerX = (drawStart.x + drawCurrent.x) / 2
-            centerY = (drawStart.y + drawCurrent.y) / 2
-          } else {
-            // rectangle
-            width = dx
-            height = dy
-            centerX = (drawStart.x + drawCurrent.x) / 2
-            centerY = (drawStart.y + drawCurrent.y) / 2
+            newShape = {
+              id: getId(),
+              type: 'circle',
+              x: centerX,
+              y: centerY,
+              width: radius * 2,
+              rotationDeg: 0,
+            }
           }
-
-          const newShape: CanvasShape = {
+        } else if (drawingTool === 'rectangle') {
+          if (dx > 1 || dy > 1) {
+            const dimensions = computeRectangleDimensions(dx, dy, drawShiftActive)
+            newShape = {
+              id: getId(),
+              type: 'rectangle',
+              x: centerX,
+              y: centerY,
+              width: dimensions.width,
+              height: dimensions.height,
+              rotationDeg: 0,
+            }
+          }
+        } else if (drawingTool === 'text') {
+          const dimensions = computeTextDimensions(dx, dy, drawShiftActive)
+          newShape = {
             id: getId(),
-            type: drawingTool,
+            type: 'text',
             x: centerX,
             y: centerY,
-            width,
-            height,
+            width: dimensions.width,
+            height: dimensions.height,
+            text: '',
+            fontSize: TEXT_FONT_SIZE_MM,
             rotationDeg: 0,
           }
+        }
 
+        if (newShape) {
           onUpdateLayout((previous) => ({
             ...previous,
-            shapes: [...previous.shapes, newShape],
+            shapes: [...previous.shapes, newShape as CanvasShape],
           }))
+          if (drawingTool === 'text') {
+            startTextEditing(newShape as CanvasTextShape, true)
+          }
         }
+
         setIsDrawing(false)
         setDrawStart(null)
         setDrawCurrent(null)
+        setDrawShiftActive(false)
       }
 
       // Finalize shape dragging
@@ -594,7 +721,21 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       window.removeEventListener('pointerup', handlePointerUp)
       window.removeEventListener('pointerleave', handlePointerUp)
     }
-  }, [dragGroupDelta, dragPreview, draggingItemId, draggingShapeId, onUpdateLayout, releasePointer, snappedEndpoints, autoConnectSnappedEndpoints, isDrawing, drawStart, drawCurrent, drawingTool])
+  }, [
+    autoConnectSnappedEndpoints,
+    dragGroupDelta,
+    dragPreview,
+    draggingItemId,
+    draggingShapeId,
+    drawCurrent,
+    drawShiftActive,
+    drawStart,
+    drawingTool,
+    isDrawing,
+    onUpdateLayout,
+    releasePointer,
+    snappedEndpoints,
+  ])
 
   const findNearestEndpoint = useCallback(
     (worldPoint: { x: number; y: number }): { ref: EndpointRef; distance: number } | null => {
@@ -700,6 +841,60 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     setSelectedEndpoints([])
   }, [])
 
+  const startTextEditing = useCallback(
+    (shape: CanvasTextShape, isNew = false) => {
+      editingTextIsNewRef.current = isNew
+      setEditingTextId(shape.id)
+      setEditingTextValue(shape.text)
+      setSelectedShapeId(shape.id)
+      setSelectedItemId(null)
+      setSelectedEndpoints([])
+      setDraggingShapeId(null)
+    },
+    [setSelectedEndpoints, setSelectedItemId, setSelectedShapeId, setDraggingShapeId],
+  )
+
+  const finishTextEditing = useCallback(
+    (commit: boolean) => {
+      if (!editingTextId) return
+      const shapeId = editingTextId
+      const trimmed = editingTextValue.trim()
+      const shouldRemove = (commit && !trimmed) || (!commit && editingTextIsNewRef.current)
+      if (commit && trimmed) {
+        onUpdateLayout((previous) => ({
+          ...previous,
+          shapes: previous.shapes.map((shape) =>
+            shape.id === shapeId ? { ...shape, text: trimmed } : shape,
+          ),
+        }))
+      } else if (shouldRemove) {
+        onUpdateLayout((previous) => ({
+          ...previous,
+          shapes: previous.shapes.filter((shape) => shape.id !== shapeId),
+        }))
+        setSelectedShapeId((previous) => (previous === shapeId ? null : previous))
+      }
+      editingTextIsNewRef.current = false
+      setEditingTextValue('')
+      setEditingTextId(null)
+      setEditingInputWorld(null)
+    },
+    [editingTextId, editingTextValue, onUpdateLayout, setSelectedShapeId],
+  )
+
+  const handleTextInputKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLDivElement>) => {
+      if ((event.key === 'Enter' || event.key === 'NumpadEnter') && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault()
+        finishTextEditing(true)
+      } else if (event.key === 'Escape') {
+        event.preventDefault()
+        finishTextEditing(false)
+      }
+    },
+    [finishTextEditing],
+  )
+
   const handlePointerDown = (event: ReactPointerEvent<SVGSVGElement>) => {
     if (event.button !== 0) return
 
@@ -756,6 +951,7 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     if (drawingTool && worldPoint) {
       event.preventDefault()
       setIsDrawing(true)
+      setDrawShiftActive(event.shiftKey)
       setDrawStart({ x: worldPoint.x, y: worldPoint.y })
       setDrawCurrent({ x: worldPoint.x, y: worldPoint.y })
       capturePointer(event.pointerId)
@@ -778,6 +974,7 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       if (worldPoint) {
         setDrawCurrent({ x: worldPoint.x, y: worldPoint.y })
       }
+      setDrawShiftActive(event.shiftKey)
       return
     }
 
@@ -1291,6 +1488,17 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     [connectSelectedEndpoints, deleteSelectedItem, disconnectSelectedEndpoints, rotateSelected],
   )
 
+  const undoRef = useRef(undo)
+  const redoRef = useRef(redo)
+
+  useEffect(() => {
+    undoRef.current = undo
+  }, [undo])
+
+  useEffect(() => {
+    redoRef.current = redo
+  }, [redo])
+
   useEffect(() => {
     const handleKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null
@@ -1299,6 +1507,21 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
         if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable) {
           return
         }
+      }
+
+      const isUndoShortcut =
+        (event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === 'z' && !event.shiftKey
+      const isRedoShortcut =
+        (event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === 'z' && event.shiftKey
+      if (isUndoShortcut) {
+        event.preventDefault()
+        undoRef.current()
+        return
+      }
+      if (isRedoShortcut) {
+        event.preventDefault()
+        redoRef.current()
+        return
       }
 
       if (event.key.toLowerCase() === 'r') {
@@ -1319,6 +1542,25 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     return () => window.removeEventListener('keydown', handleKey)
   }, [clearSelections, deleteSelectedItem, rotateSelected, selectedItemId, selectedShapeId])
 
+  const editingShape = editingTextId
+    ? (layout?.shapes.find((shape) => shape.id === editingTextId) as CanvasTextShape | undefined)
+    : undefined
+  const editingBounds =
+    editingShape || editingTextId
+      ? {
+          width: editingShape?.width ?? TEXT_DEFAULT_WIDTH_MM,
+          height: editingShape?.height ?? TEXT_DEFAULT_HEIGHT_MM,
+        }
+      : null
+  const editingTopLeft =
+    editingShape && editingBounds
+      ? { x: editingShape.x - editingBounds.width / 2, y: editingShape.y - editingBounds.height / 2 }
+      : null
+  const editingOffset = editingTopLeft ? worldPointToCanvasOffset(editingTopLeft) : null
+  const editingScale = editingOffset?.scale ?? 0
+  const editingWidthPx = editingBounds ? editingBounds.width * editingScale : 0
+  const editingHeightPx = editingBounds ? editingBounds.height * editingScale : 0
+
   if (!layout || !trackSystem) {
     return (
       <div className="canvas-container flex flex-1 items-center justify-center bg-slate-900 text-sm text-slate-300">
@@ -1329,7 +1571,10 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
 
   return (
     <div className="canvas-container flex flex-1 flex-col bg-slate-900">
-      <div className="canvas-wrapper flex h-full w-full overflow-hidden bg-slate-950 shadow-inner">
+      <div
+        ref={canvasWrapperRef}
+        className="canvas-wrapper relative flex h-full w-full overflow-hidden bg-slate-950 shadow-inner"
+      >
         <svg
           ref={svgRef}
           className="h-full w-full touch-none select-none"
@@ -1496,8 +1741,9 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
             const rotationDeg = isDragging && dragPreview ? dragPreview.rotationDeg : shape.rotationDeg
             const strokeColor = isSelected ? SELECTED_SHAPE_STROKE_COLOR : SHAPE_STROKE_COLOR
             const strokeWidth = isSelected ? SHAPE_STROKE_WIDTH + 1 : SHAPE_STROKE_WIDTH
+            const shapeType = normalizeShapeType(shape)
 
-            if (shape.type === 'circle') {
+            if (shapeType === 'circle') {
               const radius = shape.width / 2
               return (
                 <circle
@@ -1513,26 +1759,7 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                   style={{ cursor: 'pointer' }}
                 />
               )
-            } else if (shape.type === 'square') {
-              const size = shape.width
-              const halfSize = size / 2
-              return (
-                <rect
-                  key={shape.id}
-                  data-shape={shape.id}
-                  x={x - halfSize}
-                  y={y - halfSize}
-                  width={size}
-                  height={size}
-                  fill="none"
-                  stroke={strokeColor}
-                  strokeWidth={strokeWidth}
-                  transform={`rotate(${rotationDeg} ${x} ${y})`}
-                  style={{ cursor: 'pointer' }}
-                />
-              )
-            } else {
-              // rectangle
+            } else if (shapeType === 'rectangle') {
               const width = shape.width
               const height = shape.height ?? shape.width
               const halfWidth = width / 2
@@ -1552,7 +1779,50 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                   style={{ cursor: 'pointer' }}
                 />
               )
+            } else if (shapeType === 'text') {
+              const textShape = shape as CanvasTextShape
+              const textWidth = estimateTextWidth(textShape.text, textShape.fontSize)
+              const textHeight = textShape.fontSize
+              const halfWidth = textWidth / 2
+              const halfHeight = textHeight / 2
+              const transform = `translate(${x} ${y}) rotate(${rotationDeg})`
+              return (
+                <g
+                  key={shape.id}
+                  data-shape={shape.id}
+                  transform={transform}
+                  style={{ cursor: 'pointer' }}
+                  onDoubleClick={(event) => {
+                    event.stopPropagation()
+                    event.preventDefault()
+                    startTextEditing(textShape, false)
+                  }}
+                >
+                  <text
+                    x={0}
+                    y={0}
+                    textAnchor="middle"
+                    dominantBaseline="middle"
+                    fontSize={textShape.fontSize}
+                    className="fill-slate-100"
+                  >
+                    {textShape.text}
+                  </text>
+                  {isSelected && (
+                    <rect
+                      x={-halfWidth}
+                      y={-halfHeight}
+                      width={textWidth}
+                      height={textHeight}
+                      fill="none"
+                      stroke={strokeColor}
+                      strokeWidth={strokeWidth}
+                    />
+                  )}
+                </g>
+              )
             }
+            return null
           })}
 
           {/* Render drawing preview */}
@@ -1576,44 +1846,51 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                   opacity={0.7}
                 />
               )
-            } else if (drawingTool === 'square') {
-              const size = Math.max(Math.abs(dx), Math.abs(dy))
-              const halfSize = size / 2
-              return (
-                <rect
-                  x={centerX - halfSize}
-                  y={centerY - halfSize}
-                  width={size}
-                  height={size}
-                  fill="none"
-                  stroke={SHAPE_STROKE_COLOR}
-                  strokeWidth={SHAPE_STROKE_WIDTH}
-                  strokeDasharray="4 4"
-                  opacity={0.7}
-                />
-              )
-            } else {
-              // rectangle
-              const width = Math.abs(dx)
-              const height = Math.abs(dy)
-              const halfWidth = width / 2
-              const halfHeight = height / 2
-              return (
-                <rect
-                  x={centerX - halfWidth}
-                  y={centerY - halfHeight}
-                  width={width}
-                  height={height}
-                  fill="none"
-                  stroke={SHAPE_STROKE_COLOR}
-                  strokeWidth={SHAPE_STROKE_WIDTH}
-                  strokeDasharray="4 4"
-                  opacity={0.7}
-                />
-              )
             }
+            const absDx = Math.abs(dx)
+            const absDy = Math.abs(dy)
+            const dimensions =
+              drawingTool === 'text'
+                ? computeTextDimensions(absDx, absDy, drawShiftActive)
+                : computeRectangleDimensions(absDx, absDy, drawShiftActive)
+            const halfWidth = dimensions.width / 2
+            const halfHeight = (dimensions.height ?? dimensions.width) / 2
+            return (
+              <rect
+                x={centerX - halfWidth}
+                y={centerY - halfHeight}
+                width={dimensions.width}
+                height={dimensions.height ?? dimensions.width}
+                fill="none"
+                stroke={SHAPE_STROKE_COLOR}
+                strokeWidth={SHAPE_STROKE_WIDTH}
+                strokeDasharray="4 4"
+                opacity={0.7}
+              />
+            )
           })()}
         </svg>
+        {editingShape && editingOffset && editingBounds && (
+          <div
+            ref={textInputRef}
+            contentEditable
+            suppressContentEditableWarning
+            role="textbox"
+            aria-multiline="true"
+            onInput={(event) => setEditingTextValue(event.currentTarget.textContent ?? '')}
+            onBlur={() => finishTextEditing(true)}
+            onKeyDown={handleTextInputKeyDown}
+            className="absolute overflow-auto rounded border border-blue-500/40 bg-slate-900/80 p-2 text-xs text-slate-100 shadow-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500"
+            style={{
+              left: editingOffset.left,
+              top: editingOffset.top,
+              width: Math.max(editingWidthPx, 40),
+              height: Math.max(editingHeightPx, 30),
+              whiteSpace: 'pre-wrap',
+              zIndex: 20,
+            }}
+          />
+        )}
       </div>
     </div>
   )

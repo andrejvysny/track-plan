@@ -214,16 +214,18 @@ function App() {
         />
 
         <div className="flex flex-1 overflow-hidden">
-          <Canvas
-            ref={canvasRef}
-            layout={activeLayout}
-            trackSystem={activeTrackSystem}
-            onUpdateLayout={updateActiveProjectLayout}
-            onSelectedItemChange={setSelectedItemId}
-            onSelectedEndpointsChange={setSelectedEndpoints}
-            debugMode={debugMode}
-            drawingTool={drawingTool}
-          />
+            <Canvas
+              ref={canvasRef}
+              layout={activeLayout}
+              trackSystem={activeTrackSystem}
+              onUpdateLayout={updateActiveProjectLayout}
+              onSelectedItemChange={setSelectedItemId}
+              onSelectedEndpointsChange={setSelectedEndpoints}
+              debugMode={debugMode}
+              drawingTool={drawingTool}
+              undo={undo}
+              redo={redo}
+            />
         </div>
 
         <ComponentsSidebar trackSystem={activeTrackSystem} onComponentClick={handleComponentClick} />

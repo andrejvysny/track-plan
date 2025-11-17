@@ -28,23 +28,41 @@ export interface EndpointConnection {
   endpoints: [EndpointRef, EndpointRef]
 }
 
-export type ShapeType = 'rectangle' | 'square' | 'circle'
+export type ShapeType = 'rectangle' | 'circle' | 'text'
 
-export interface CanvasShape {
+export type CanvasPrimitiveShape = {
   /** Unique instance identifier (e.g. uuid) */
   id: string
-  /** Type of shape */
-  type: ShapeType
+  /** Type of primitive shape: rectangle or circle */
+  type: 'rectangle' | 'circle'
   /** Center X coordinate in mm */
   x: number
   /** Center Y coordinate in mm */
   y: number
-  /** Width in mm (for rectangle/square) or radius in mm (for circle) */
+  /** Width in mm (for rectangle) or diameter in mm (for circle) */
   width: number
-  /** Height in mm (for rectangle only, ignored for square/circle) */
+  /** Height in mm (for rectangle only) */
   height?: number
   /** Rotation in degrees */
   rotationDeg: number
 }
+
+export type CanvasTextShape = {
+  id: string
+  type: 'text'
+  x: number
+  y: number
+  /** The text content to render */
+  text: string
+  /** Font size in mm */
+  fontSize: number
+  /** Width of the text area in mm */
+  width: number
+  /** Height of the text area in mm */
+  height: number
+  rotationDeg: number
+}
+
+export type CanvasShape = CanvasPrimitiveShape | CanvasTextShape
 
 /** LayoutState is intentionally generic right now; future phases will extend it with connectors, grid settings, etc. */

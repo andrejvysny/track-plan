@@ -1,5 +1,6 @@
 import type { Project } from '../../types/project'
 import type { ShapeType } from '../../types/layout'
+import { Undo, Redo } from 'lucide-react'
 
 interface TopToolbarProps {
   activeProject: Project | null
@@ -74,6 +75,7 @@ export function TopToolbar({
     'border-green-500/60 bg-green-500/10 text-green-300 hover:border-green-400 hover:bg-green-500/20'
   const shapeButtonActive =
     'border-green-400 bg-green-500/30 text-green-200 hover:border-green-300 hover:bg-green-500/40'
+  const iconButton = 'rounded border border-slate-800 bg-slate-900 p-2 text-slate-100 transition hover:border-slate-600 hover:bg-slate-800 hover:text-slate-100'
   return (
     <header className="toolbar-top flex h-12 items-center justify-between border-b border-slate-800 bg-slate-950 px-4 text-slate-100">
       <div>
@@ -86,28 +88,22 @@ export function TopToolbar({
         <div className="flex items-center gap-3">
           <button
             type="button"
-            onClick={onNewProject}
-            className={`${baseControlStyles} border-slate-800 bg-slate-900 text-slate-100 hover:border-slate-600 hover:bg-slate-800 hover:text-slate-100`}
+            onClick={onUndo}
+            disabled={!canUndo}
+            className={`${iconButton} ${canUndo ? '' : 'opacity-60 cursor-not-allowed'}`}
+            title="Undo"
           >
-            New Project
+            <Undo className="h-4 w-4" aria-hidden />
           </button>
           <button
             type="button"
-            onClick={onReload}
-            className={`${baseControlStyles} border-slate-800 bg-slate-900 text-slate-100 hover:border-slate-600 hover:bg-slate-800 hover:text-slate-100`}
+            onClick={onRedo}
+            disabled={!canRedo}
+            className={`${iconButton} ${canRedo ? '' : 'opacity-60 cursor-not-allowed'}`}
+            title="Redo"
           >
-            Reload
+            <Redo className="h-4 w-4" aria-hidden />
           </button>
-          <button
-            type="button"
-            onClick={onResetLayout}
-            className={`${baseControlStyles} border-slate-800 bg-slate-900 text-slate-100 hover:border-slate-600 hover:bg-slate-800 hover:text-slate-100`}
-          >
-            Reset
-          </button>
-        </div>
-
-        <div className="flex flex-1 items-center justify-center gap-3">
           <div className="flex items-center gap-2 border-r border-slate-800 pr-3">
             <span className="text-xs text-slate-400">Shapes:</span>
             <button
@@ -120,21 +116,24 @@ export function TopToolbar({
             </button>
             <button
               type="button"
-              onClick={() => onDrawingToolChange(drawingTool === 'square' ? null : 'square')}
-              className={`${baseControlStyles} ${drawingTool === 'square' ? shapeButtonActive : shapeButton}`}
-              title="Draw Square"
-            >
-              ■
-            </button>
-            <button
-              type="button"
               onClick={() => onDrawingToolChange(drawingTool === 'circle' ? null : 'circle')}
               className={`${baseControlStyles} ${drawingTool === 'circle' ? shapeButtonActive : shapeButton}`}
               title="Draw Circle"
             >
               ○
             </button>
+            <button
+              type="button"
+              onClick={() => onDrawingToolChange(drawingTool === 'text' ? null : 'text')}
+              className={`${baseControlStyles} ${drawingTool === 'text' ? shapeButtonActive : shapeButton}`}
+              title="Add Text"
+            >
+              T
+            </button>
           </div>
+        </div>
+
+        <div className="flex flex-1 items-center justify-center gap-3">
           <button
             type="button"
             onClick={onConnectEndpoints}
@@ -150,22 +149,6 @@ export function TopToolbar({
             className={`${baseControlStyles} ${dangerButton}`}
           >
             Disconnect
-          </button>
-          <button
-            type="button"
-            onClick={onUndo}
-            disabled={!canUndo}
-            className={`${baseControlStyles} border-slate-800 bg-slate-900 text-slate-100 hover:border-slate-600 hover:bg-slate-800`}
-          >
-            Undo
-          </button>
-          <button
-            type="button"
-            onClick={onRedo}
-            disabled={!canRedo}
-            className={`${baseControlStyles} border-slate-800 bg-slate-900 text-slate-100 hover:border-slate-600 hover:bg-slate-800`}
-          >
-            Redo
           </button>
           <button
             type="button"
