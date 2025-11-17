@@ -1137,8 +1137,8 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   }
 
   return (
-    <div className="canvas-container flex flex-1 flex-col bg-slate-900 p-4">
-      <div className="canvas-wrapper flex h-full w-full overflow-hidden rounded border border-slate-700 bg-slate-950 shadow-inner">
+    <div className="canvas-container flex flex-1 flex-col bg-slate-900">
+      <div className="canvas-wrapper flex h-full w-full overflow-hidden bg-slate-950 shadow-inner">
         <svg
           ref={svgRef}
           className="h-full w-full touch-none select-none"
