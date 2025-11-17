@@ -7,6 +7,7 @@ import { TopToolbar } from './components/Layout/TopToolbar'
 import { useProjectsState } from './state/projectsState'
 import { buildLayoutSvgString } from './export/exportSvg'
 import type { EndpointRef } from './types/trackSystem'
+import type { ShapeType } from './types/layout'
 import { ROTATION_STEP_DEG } from './constants/layout'
 import { connectionMatchesEndpoints } from './utils/connectionUtils'
 
@@ -28,6 +29,7 @@ function App() {
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null)
   const [selectedEndpoints, setSelectedEndpoints] = useState<EndpointRef[]>([])
   const [debugMode, setDebugMode] = useState(false)
+  const [drawingTool, setDrawingTool] = useState<ShapeType | null>(null)
 
   const activeTrackSystem = useMemo(
     () =>
@@ -73,6 +75,7 @@ function App() {
       ...layout,
       placedItems: [],
       connections: [],
+      shapes: [],
     }))
   }
 
@@ -157,6 +160,7 @@ function App() {
   }
 
   const canRotateSelection = Boolean(selectedItemId) && !selectedItemConnected && !selectedItemIsGrounded
+  // Note: Shape deletion is handled internally by Canvas, so we only check for item selection here
   const canDeleteSelection = Boolean(selectedItemId)
   const canConnectEndpoints = selectedEndpoints.length === 2
   const canDisconnectEndpoints = useMemo(() => {
@@ -194,6 +198,8 @@ function App() {
         canToggleGroundSelection={canToggleGroundSelection}
         isSelectionGrounded={selectedItemIsGrounded}
         debugMode={debugMode}
+        drawingTool={drawingTool}
+        onDrawingToolChange={setDrawingTool}
       />
 
       <div className="app-main-row flex flex-1 min-h-0 overflow-hidden">
@@ -215,6 +221,7 @@ function App() {
             onSelectedItemChange={setSelectedItemId}
             onSelectedEndpointsChange={setSelectedEndpoints}
             debugMode={debugMode}
+            drawingTool={drawingTool}
           />
         </div>
 

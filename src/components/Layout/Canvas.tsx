@@ -10,7 +10,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type WheelEvent,
 } from 'react'
-import type { EndpointConnection, LayoutState, PlacedItem } from '../../types/layout'
+import type { CanvasShape, EndpointConnection, LayoutState, PlacedItem, ShapeType } from '../../types/layout'
 import type {
   ConnectorKey,
   EndpointRef,
@@ -36,6 +36,7 @@ type CanvasProps = {
   onSelectedItemChange?: (itemId: string | null) => void
   onSelectedEndpointsChange?: (endpoints: EndpointRef[]) => void
   debugMode?: boolean
+  drawingTool?: ShapeType | null
 }
 
 export interface CanvasHandle {
@@ -89,9 +90,12 @@ const SELECTED_ENDPOINT_COLOR = '#dc2626'
 const CONNECTED_ENDPOINT_COLOR = '#16a34a'
 const GROUNDED_TRACK_BORDER_COLOR = '#facc15'
 const LABEL_OFFSET_MM = 18
+const SHAPE_STROKE_COLOR = 'white'
+const SHAPE_STROKE_WIDTH = 2
+const SELECTED_SHAPE_STROKE_COLOR = '#60a5fa'
 
 export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
-  { layout, trackSystem, onUpdateLayout, onSelectedItemChange, onSelectedEndpointsChange, debugMode = false },
+  { layout, trackSystem, onUpdateLayout, onSelectedItemChange, onSelectedEndpointsChange, debugMode = false, drawingTool = null },
   ref,
 ) {
   const svgRef = useRef<SVGSVGElement | null>(null)
@@ -99,14 +103,21 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   const capturedPointerIdRef = useRef<number | null>(null)
 
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null)
+  const [selectedShapeId, setSelectedShapeId] = useState<string | null>(null)
   const [selectedEndpoints, setSelectedEndpoints] = useState<EndpointRef[]>([])
   const [draggingItemId, setDraggingItemId] = useState<string | null>(null)
+  const [draggingShapeId, setDraggingShapeId] = useState<string | null>(null)
   const [dragStartClient, setDragStartClient] = useState<ClientPoint | null>(null)
   const [dragStartTransform, setDragStartTransform] = useState<DragPreview | null>(null)
   const [dragPreview, setDragPreview] = useState<DragPreview | null>(null)
   const [dragGroupIds, setDragGroupIds] = useState<string[] | null>(null)
   const [dragGroupDelta, setDragGroupDelta] = useState<{ x: number; y: number } | null>(null)
   const [snappedEndpoints, setSnappedEndpoints] = useState<{ moving: EndpointRef; target: EndpointRef } | null>(null)
+  
+  // Drawing state
+  const [isDrawing, setIsDrawing] = useState(false)
+  const [drawStart, setDrawStart] = useState<{ x: number; y: number } | null>(null)
+  const [drawCurrent, setDrawCurrent] = useState<{ x: number; y: number } | null>(null)
 
   const [isPanning, setIsPanning] = useState(false)
   const [camera, setCamera] = useState({
@@ -240,6 +251,7 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     (nextLayout: LayoutState | null) => {
       if (!nextLayout) {
         setSelectedItemId(null)
+        setSelectedShapeId(null)
         setSelectedEndpoints([])
         return
       }
@@ -248,11 +260,15 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
         setSelectedItemId(null)
       }
 
+      if (selectedShapeId && !nextLayout.shapes.some((shape) => shape.id === selectedShapeId)) {
+        setSelectedShapeId(null)
+      }
+
       setSelectedEndpoints((previous) =>
         previous.filter((endpoint) => nextLayout.placedItems.some((item) => item.id === endpoint.itemId)),
       )
     },
-    [selectedItemId],
+    [selectedItemId, selectedShapeId],
   )
 
   useEffect(() => {
@@ -446,6 +462,73 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
 
   useEffect(() => {
     const handlePointerUp = () => {
+      // Finalize drawing
+      if (isDrawing && drawStart && drawCurrent && drawingTool) {
+        const dx = Math.abs(drawCurrent.x - drawStart.x)
+        const dy = Math.abs(drawCurrent.y - drawStart.y)
+        
+        // Only create shape if there's meaningful size
+        if (dx > 1 || dy > 1) {
+          let width: number
+          let height: number | undefined
+          let centerX: number
+          let centerY: number
+
+          if (drawingTool === 'circle') {
+            const radius = Math.hypot(dx, dy) / 2
+            width = radius * 2
+            centerX = (drawStart.x + drawCurrent.x) / 2
+            centerY = (drawStart.y + drawCurrent.y) / 2
+          } else if (drawingTool === 'square') {
+            const size = Math.max(dx, dy)
+            width = size
+            centerX = (drawStart.x + drawCurrent.x) / 2
+            centerY = (drawStart.y + drawCurrent.y) / 2
+          } else {
+            // rectangle
+            width = dx
+            height = dy
+            centerX = (drawStart.x + drawCurrent.x) / 2
+            centerY = (drawStart.y + drawCurrent.y) / 2
+          }
+
+          const newShape: CanvasShape = {
+            id: getId(),
+            type: drawingTool,
+            x: centerX,
+            y: centerY,
+            width,
+            height,
+            rotationDeg: 0,
+          }
+
+          onUpdateLayout((previous) => ({
+            ...previous,
+            shapes: [...previous.shapes, newShape],
+          }))
+        }
+        setIsDrawing(false)
+        setDrawStart(null)
+        setDrawCurrent(null)
+      }
+
+      // Finalize shape dragging
+      if (draggingShapeId && dragPreview) {
+        onUpdateLayout((previous) => ({
+          ...previous,
+          shapes: previous.shapes.map((shape) =>
+            shape.id === draggingShapeId
+              ? {
+                  ...shape,
+                  x: dragPreview.x,
+                  y: dragPreview.y,
+                  rotationDeg: normalizeAngle(dragPreview.rotationDeg),
+                }
+              : shape,
+          ),
+        }))
+      }
+
       if (draggingItemId) {
         // Try to auto-connect if endpoints are snapped
         let connectionCreated = false
@@ -492,6 +575,7 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       }
 
       setDraggingItemId(null)
+      setDraggingShapeId(null)
       setDragStartClient(null)
       setDragStartTransform(null)
       setDragPreview(null)
@@ -510,7 +594,7 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       window.removeEventListener('pointerup', handlePointerUp)
       window.removeEventListener('pointerleave', handlePointerUp)
     }
-  }, [dragGroupDelta, dragPreview, draggingItemId, onUpdateLayout, releasePointer, snappedEndpoints, autoConnectSnappedEndpoints])
+  }, [dragGroupDelta, dragPreview, draggingItemId, draggingShapeId, onUpdateLayout, releasePointer, snappedEndpoints, autoConnectSnappedEndpoints, isDrawing, drawStart, drawCurrent, drawingTool])
 
   const findNearestEndpoint = useCallback(
     (worldPoint: { x: number; y: number }): { ref: EndpointRef; distance: number } | null => {
@@ -612,6 +696,7 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
 
   const clearSelections = useCallback(() => {
     setSelectedItemId(null)
+    setSelectedShapeId(null)
     setSelectedEndpoints([])
   }, [])
 
@@ -625,10 +710,35 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       return
     }
 
+    // Check if clicking on a shape
+    const clickedShape = targetElement?.closest('[data-shape]')
+    if (clickedShape && !drawingTool) {
+      const shapeId = clickedShape.getAttribute('data-shape')
+      if (shapeId) {
+        event.stopPropagation()
+        setSelectedShapeId(shapeId)
+        setSelectedItemId(null)
+        setSelectedEndpoints([])
+        // Start dragging shape if not in drawing mode
+        const worldPoint = clientPointToWorld({ x: event.clientX, y: event.clientY })
+        if (worldPoint && layout) {
+          const shape = layout.shapes.find((s) => s.id === shapeId)
+          if (shape) {
+            setDraggingShapeId(shapeId)
+            setDragStartClient({ x: event.clientX, y: event.clientY })
+            setDragStartTransform({ x: shape.x, y: shape.y, rotationDeg: shape.rotationDeg })
+            setDragPreview({ x: shape.x, y: shape.y, rotationDeg: shape.rotationDeg })
+            capturePointer(event.pointerId)
+          }
+        }
+        return
+      }
+    }
+
     // Fallback: check for nearby endpoints if not clicking on a circle
     // This handles cases where the endpoint circle might not be clickable
     const worldPoint = clientPointToWorld({ x: event.clientX, y: event.clientY })
-    if (worldPoint) {
+    if (worldPoint && !drawingTool) {
       const nearest = findNearestEndpoint(worldPoint)
       if (nearest && nearest.distance <= ENDPOINT_CLICK_DISTANCE_MM) {
         const additive = event.shiftKey
@@ -642,6 +752,17 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       return
     }
 
+    // If in drawing mode, start drawing
+    if (drawingTool && worldPoint) {
+      event.preventDefault()
+      setIsDrawing(true)
+      setDrawStart({ x: worldPoint.x, y: worldPoint.y })
+      setDrawCurrent({ x: worldPoint.x, y: worldPoint.y })
+      capturePointer(event.pointerId)
+      clearSelections()
+      return
+    }
+
     // Background click: start panning and clear selections
     event.preventDefault()
     setIsPanning(true)
@@ -651,6 +772,34 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   }
 
   const handlePointerMove = (event: ReactPointerEvent<SVGSVGElement>) => {
+    // Handle drawing
+    if (isDrawing && drawStart) {
+      const worldPoint = clientPointToWorld({ x: event.clientX, y: event.clientY })
+      if (worldPoint) {
+        setDrawCurrent({ x: worldPoint.x, y: worldPoint.y })
+      }
+      return
+    }
+
+    // Handle shape dragging
+    if (draggingShapeId && dragStartClient && dragStartTransform) {
+      event.preventDefault()
+      const delta = {
+        x: event.clientX - dragStartClient.x,
+        y: event.clientY - dragStartClient.y,
+      }
+      const worldDelta = clientDeltaToWorld(delta)
+      if (!worldDelta) return
+
+      const nextTransform: DragPreview = {
+        x: dragStartTransform.x + worldDelta.dx,
+        y: dragStartTransform.y + worldDelta.dy,
+        rotationDeg: dragStartTransform.rotationDeg,
+      }
+      setDragPreview(nextTransform)
+      return
+    }
+
     if (draggingItemId && dragStartClient && dragStartTransform) {
       event.preventDefault()
       const delta = {
@@ -890,7 +1039,34 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   // Rotation is shared between toolbar buttons and the R / Shift+R shortcuts so behaviour stays consistent.
   const rotateSelected = useCallback(
     (deltaDeg: number) => {
-      if (!layout || !selectedItemId) return
+      if (!layout) return
+      
+      // Handle shape rotation
+      if (selectedShapeId) {
+        const currentShape = layout.shapes.find((shape) => shape.id === selectedShapeId)
+        if (!currentShape) return
+
+        const newRotationDeg = normalizeAngle(currentShape.rotationDeg + deltaDeg)
+
+        onUpdateLayout((previous) => ({
+          ...previous,
+          shapes: previous.shapes.map((shape) =>
+            shape.id === selectedShapeId
+              ? { ...shape, rotationDeg: newRotationDeg }
+              : shape,
+          ),
+        }))
+
+        setDragPreview((previous) =>
+          previous && draggingShapeId === selectedShapeId
+            ? { ...previous, rotationDeg: newRotationDeg }
+            : previous,
+        )
+        return
+      }
+
+      // Handle item rotation
+      if (!selectedItemId) return
       if (isItemConnected(selectedItemId) || isItemGrounded(selectedItemId)) return
 
       const currentItem = layout.placedItems.find((item) => item.id === selectedItemId)
@@ -935,19 +1111,34 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     },
     [
       draggingItemId,
+      draggingShapeId,
       geometryCache,
       getConnectorByKey,
       layout,
       onUpdateLayout,
       selectedEndpoints,
       selectedItemId,
+      selectedShapeId,
       isItemConnected,
       isItemGrounded,
     ],
   )
 
   const deleteSelectedItem = useCallback(() => {
-    if (!layout || !selectedItemId) return
+    if (!layout) return
+
+    // Handle shape deletion
+    if (selectedShapeId) {
+      onUpdateLayout((previous) => ({
+        ...previous,
+        shapes: previous.shapes.filter((shape) => shape.id !== selectedShapeId),
+      }))
+      setSelectedShapeId(null)
+      return
+    }
+
+    // Handle item deletion
+    if (!selectedItemId) return
 
     const filterConnections = (connections?: EndpointConnection[]) =>
       (connections ?? []).filter((connection) =>
@@ -961,7 +1152,7 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     }))
     setSelectedItemId(null)
     setSelectedEndpoints([])
-  }, [layout, onUpdateLayout, selectedItemId])
+  }, [layout, onUpdateLayout, selectedItemId, selectedShapeId])
 
   // Connect endpoints reuses the same connector math as snapping: match directions, then translate the moving item.
   const connectSelectedEndpoints = useCallback(() => {
@@ -1111,11 +1302,11 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       }
 
       if (event.key.toLowerCase() === 'r') {
-        if (!selectedItemId) return
+        if (!selectedItemId && !selectedShapeId) return
         event.preventDefault()
         rotateSelected(event.shiftKey ? -ROTATION_STEP_DEG : ROTATION_STEP_DEG)
       } else if (event.key === 'Delete' || event.key === 'Backspace') {
-        if (!selectedItemId) return
+        if (!selectedItemId && !selectedShapeId) return
         event.preventDefault()
         deleteSelectedItem()
       } else if (event.key === 'Escape') {
@@ -1126,7 +1317,7 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
 
     window.addEventListener('keydown', handleKey)
     return () => window.removeEventListener('keydown', handleKey)
-  }, [clearSelections, deleteSelectedItem, rotateSelected, selectedItemId])
+  }, [clearSelections, deleteSelectedItem, rotateSelected, selectedItemId, selectedShapeId])
 
   if (!layout || !trackSystem) {
     return (
@@ -1295,6 +1486,133 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
               </g>
             )
           })}
+
+          {/* Render shapes */}
+          {layout.shapes.map((shape) => {
+            const isSelected = selectedShapeId === shape.id
+            const isDragging = draggingShapeId === shape.id
+            const x = isDragging && dragPreview ? dragPreview.x : shape.x
+            const y = isDragging && dragPreview ? dragPreview.y : shape.y
+            const rotationDeg = isDragging && dragPreview ? dragPreview.rotationDeg : shape.rotationDeg
+            const strokeColor = isSelected ? SELECTED_SHAPE_STROKE_COLOR : SHAPE_STROKE_COLOR
+            const strokeWidth = isSelected ? SHAPE_STROKE_WIDTH + 1 : SHAPE_STROKE_WIDTH
+
+            if (shape.type === 'circle') {
+              const radius = shape.width / 2
+              return (
+                <circle
+                  key={shape.id}
+                  data-shape={shape.id}
+                  cx={x}
+                  cy={y}
+                  r={radius}
+                  fill="none"
+                  stroke={strokeColor}
+                  strokeWidth={strokeWidth}
+                  transform={`rotate(${rotationDeg} ${x} ${y})`}
+                  style={{ cursor: 'pointer' }}
+                />
+              )
+            } else if (shape.type === 'square') {
+              const size = shape.width
+              const halfSize = size / 2
+              return (
+                <rect
+                  key={shape.id}
+                  data-shape={shape.id}
+                  x={x - halfSize}
+                  y={y - halfSize}
+                  width={size}
+                  height={size}
+                  fill="none"
+                  stroke={strokeColor}
+                  strokeWidth={strokeWidth}
+                  transform={`rotate(${rotationDeg} ${x} ${y})`}
+                  style={{ cursor: 'pointer' }}
+                />
+              )
+            } else {
+              // rectangle
+              const width = shape.width
+              const height = shape.height ?? shape.width
+              const halfWidth = width / 2
+              const halfHeight = height / 2
+              return (
+                <rect
+                  key={shape.id}
+                  data-shape={shape.id}
+                  x={x - halfWidth}
+                  y={y - halfHeight}
+                  width={width}
+                  height={height}
+                  fill="none"
+                  stroke={strokeColor}
+                  strokeWidth={strokeWidth}
+                  transform={`rotate(${rotationDeg} ${x} ${y})`}
+                  style={{ cursor: 'pointer' }}
+                />
+              )
+            }
+          })}
+
+          {/* Render drawing preview */}
+          {isDrawing && drawStart && drawCurrent && drawingTool && (() => {
+            const dx = drawCurrent.x - drawStart.x
+            const dy = drawCurrent.y - drawStart.y
+            const centerX = (drawStart.x + drawCurrent.x) / 2
+            const centerY = (drawStart.y + drawCurrent.y) / 2
+
+            if (drawingTool === 'circle') {
+              const radius = Math.hypot(dx, dy) / 2
+              return (
+                <circle
+                  cx={centerX}
+                  cy={centerY}
+                  r={radius}
+                  fill="none"
+                  stroke={SHAPE_STROKE_COLOR}
+                  strokeWidth={SHAPE_STROKE_WIDTH}
+                  strokeDasharray="4 4"
+                  opacity={0.7}
+                />
+              )
+            } else if (drawingTool === 'square') {
+              const size = Math.max(Math.abs(dx), Math.abs(dy))
+              const halfSize = size / 2
+              return (
+                <rect
+                  x={centerX - halfSize}
+                  y={centerY - halfSize}
+                  width={size}
+                  height={size}
+                  fill="none"
+                  stroke={SHAPE_STROKE_COLOR}
+                  strokeWidth={SHAPE_STROKE_WIDTH}
+                  strokeDasharray="4 4"
+                  opacity={0.7}
+                />
+              )
+            } else {
+              // rectangle
+              const width = Math.abs(dx)
+              const height = Math.abs(dy)
+              const halfWidth = width / 2
+              const halfHeight = height / 2
+              return (
+                <rect
+                  x={centerX - halfWidth}
+                  y={centerY - halfHeight}
+                  width={width}
+                  height={height}
+                  fill="none"
+                  stroke={SHAPE_STROKE_COLOR}
+                  strokeWidth={SHAPE_STROKE_WIDTH}
+                  strokeDasharray="4 4"
+                  opacity={0.7}
+                />
+              )
+            }
+          })()}
         </svg>
       </div>
     </div>

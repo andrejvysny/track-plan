@@ -1,4 +1,5 @@
 import type { Project } from '../../types/project'
+import type { ShapeType } from '../../types/layout'
 
 interface TopToolbarProps {
   activeProject: Project | null
@@ -22,6 +23,8 @@ interface TopToolbarProps {
   canToggleGroundSelection: boolean
   isSelectionGrounded: boolean
   debugMode: boolean
+  drawingTool: ShapeType | null
+  onDrawingToolChange: (tool: ShapeType | null) => void
 }
 
 export function TopToolbar({
@@ -46,6 +49,8 @@ export function TopToolbar({
   canToggleGroundSelection,
   isSelectionGrounded,
   debugMode,
+  drawingTool,
+  onDrawingToolChange,
 }: TopToolbarProps) {
   const baseControlStyles =
     'rounded border px-2 py-1 font-semibold transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2'
@@ -59,6 +64,10 @@ export function TopToolbar({
     'border-amber-500/60 bg-amber-500/10 text-amber-300 hover:border-amber-400 hover:bg-amber-500/20 disabled:border-slate-800 disabled:bg-slate-900/70 disabled:text-slate-600'
   const debugButton =
     'border-purple-500/60 bg-purple-500/10 text-purple-300 hover:border-purple-400 hover:bg-purple-500/20'
+  const shapeButton =
+    'border-green-500/60 bg-green-500/10 text-green-300 hover:border-green-400 hover:bg-green-500/20'
+  const shapeButtonActive =
+    'border-green-400 bg-green-500/30 text-green-200 hover:border-green-300 hover:bg-green-500/40'
   return (
     <header className="toolbar-top flex h-12 items-center justify-between border-b border-slate-800 bg-slate-950 px-4 text-slate-100">
       <div>
@@ -100,6 +109,33 @@ export function TopToolbar({
         </div>
 
         <div className="flex flex-1 items-center justify-center gap-3">
+          <div className="flex items-center gap-2 border-r border-slate-800 pr-3">
+            <span className="text-xs text-slate-400">Shapes:</span>
+            <button
+              type="button"
+              onClick={() => onDrawingToolChange(drawingTool === 'rectangle' ? null : 'rectangle')}
+              className={`${baseControlStyles} ${drawingTool === 'rectangle' ? shapeButtonActive : shapeButton}`}
+              title="Draw Rectangle"
+            >
+              ▭
+            </button>
+            <button
+              type="button"
+              onClick={() => onDrawingToolChange(drawingTool === 'square' ? null : 'square')}
+              className={`${baseControlStyles} ${drawingTool === 'square' ? shapeButtonActive : shapeButton}`}
+              title="Draw Square"
+            >
+              ■
+            </button>
+            <button
+              type="button"
+              onClick={() => onDrawingToolChange(drawingTool === 'circle' ? null : 'circle')}
+              className={`${baseControlStyles} ${drawingTool === 'circle' ? shapeButtonActive : shapeButton}`}
+              title="Draw Circle"
+            >
+              ○
+            </button>
+          </div>
           <button
             type="button"
             onClick={onConnectEndpoints}

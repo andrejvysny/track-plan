@@ -11,6 +11,7 @@ export function createDefaultLayoutState(): LayoutState {
     trackSystems: [pikoA_H0],
     placedItems: [],
     connections: [],
+    shapes: [],
   }
 }
 
