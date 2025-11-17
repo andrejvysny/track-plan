@@ -4,7 +4,6 @@ import type { ShapeType } from '../../types/layout'
 interface TopToolbarProps {
   activeProject: Project | null
   onNewProject: () => void
-  onSave: () => void
   onReload: () => void
   onResetLayout: () => void
   onExportSvg: () => void
@@ -30,7 +29,6 @@ interface TopToolbarProps {
 export function TopToolbar({
   activeProject,
   onNewProject,
-  onSave,
   onReload,
   onResetLayout,
   onExportSvg,
@@ -84,13 +82,6 @@ export function TopToolbar({
             className={`${baseControlStyles} border-slate-800 bg-slate-900 text-slate-100 hover:border-slate-600 hover:bg-slate-800 hover:text-slate-100`}
           >
             New Project
-          </button>
-          <button
-            type="button"
-            onClick={onSave}
-            className={`${baseControlStyles} border-slate-800 bg-slate-900 text-slate-100 hover:border-slate-600 hover:bg-slate-800 hover:text-slate-100`}
-          >
-            Save
           </button>
           <button
             type="button"

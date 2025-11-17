@@ -14,7 +14,6 @@ import { connectionMatchesEndpoints } from './utils/connectionUtils'
 function App() {
   const {
     projectsState,
-    setProjectsState,
     activeProject,
     setActiveProjectId,
     createProject,
@@ -77,11 +76,6 @@ function App() {
       connections: [],
       shapes: [],
     }))
-  }
-
-  const handleSave = () => {
-    setProjectsState((previous) => ({ ...previous }))
-    console.log('Project saved (state already persisted to localStorage)')
   }
 
   const handleExportSvg = () => {
@@ -179,7 +173,6 @@ function App() {
       <TopToolbar
         activeProject={activeProject}
         onNewProject={createProject}
-        onSave={handleSave}
         onReload={reloadFromLocalStorage}
         onResetLayout={handleResetLayout}
         onExportSvg={handleExportSvg}
