@@ -210,8 +210,10 @@ function getSimpleSwitchGeometry(
 
   const branchEndX = radius * Math.sin(thetaRad)
   const branchEndY = directionSign * (radius - radius * Math.cos(thetaRad))
-  // Endpoint vector is horizontal (0°) pointing outside (right) for consistent visualization
-  const branchConnector = makeConnector(branchEndX, branchEndY, 0)
+  // For WL/WR switches using R9 curve (radius 907.97, angle 15°), subtract R9 angle from branch endpoint
+  const isR9Switch = Math.abs(radius - 907.97) < 0.01 && Math.abs(branchAngleDeg - 15) < 0.01
+  const branchDirectionDeg = isR9Switch ? 0 - branchAngleDeg : 0
+  const branchConnector = makeConnector(branchEndX, branchEndY, branchDirectionDeg)
 
   const buildPathD = () => {
     const largeArcFlag = 0
