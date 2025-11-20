@@ -1,3 +1,4 @@
+import type { ChangeEventHandler } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { TrackComponentDefinition, TrackComponentType } from './types/trackSystem'
 import { Canvas, type CanvasHandle } from './components/Layout/Canvas'
@@ -13,6 +14,7 @@ import { ROTATION_STEP_DEG } from './constants/layout'
 import { TRACK_COMPONENT_TYPES } from './constants/trackUsage'
 import type { TrackUsageComponentCount, TrackUsageSummary } from './types/trackUsage'
 import { connectionMatchesEndpoints } from './utils/connectionUtils'
+import { buildProjectExport, parseProjectImport } from './utils/projectSerialization'
 
 function App() {
   const {
@@ -28,10 +30,12 @@ function App() {
     redo,
     canUndo,
     canRedo,
+    addImportedProject,
   } = useProjectsState()
 
   const activeLayout = activeProject?.layout ?? null
   const canvasRef = useRef<CanvasHandle | null>(null)
+  const importInputRef = useRef<HTMLInputElement | null>(null)
   const [selectedItemIds, setSelectedItemIds] = useState<Set<string>>(new Set())
   const [selectedEndpoints, setSelectedEndpoints] = useState<EndpointRef[]>([])
   const [debugMode, setDebugMode] = useState(false)
@@ -169,6 +173,12 @@ function App() {
     }))
   }
 
+  const buildFileName = (name: string, extension: string) => {
+    const safeBase = name.trim().replace(/[^a-z0-9-_]+/gi, '_').replace(/_+/g, '_').replace(/^_+|_+$/g, '')
+    const fallback = safeBase.length > 0 ? safeBase : 'project'
+    return `${fallback}.${extension}`
+  }
+
   const handleExportSvg = () => {
     if (!activeProject || !activeLayout || !activeTrackSystem) {
       console.warn('Nothing to export yet')
@@ -180,13 +190,50 @@ function App() {
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `${activeProject.name ?? 'layout'}.svg`
+    a.download = buildFileName(activeProject.name ?? 'layout', 'svg')
     a.click()
     URL.revokeObjectURL(url)
   }
 
-  const handleImportStub = () => {
-    console.log('Import not implemented yet')
+  const handleExportProjectJson = () => {
+    if (!activeProject) {
+      window.alert('No project selected to export.')
+      return
+    }
+
+    const exportString = buildProjectExport(activeProject)
+    const blob = new Blob([exportString], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = buildFileName(activeProject.name ?? 'project', 'json')
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const handleImportRequest = () => {
+    importInputRef.current?.click()
+  }
+
+  const handleImportFile: ChangeEventHandler<HTMLInputElement> = async (event) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+
+    try {
+      const content = await file.text()
+      const parsed = parseProjectImport(content)
+      if (!parsed.ok) {
+        window.alert(`Import failed: ${parsed.error}`)
+        return
+      }
+
+      addImportedProject(parsed.project)
+    } catch (error) {
+      console.error('Failed to import project', error)
+      window.alert('Failed to import project. Please check the console for details.')
+    } finally {
+      event.target.value = ''
+    }
   }
 
   const addComponentToLayout = useCallback(
@@ -275,7 +322,8 @@ function App() {
         onReload={reloadFromLocalStorage}
         onResetLayout={handleResetLayout}
         onExportSvg={handleExportSvg}
-        onImport={handleImportStub}
+        onExportJson={handleExportProjectJson}
+        onImport={handleImportRequest}
         onConnectEndpoints={handleConnectEndpoints}
         onDisconnectEndpoints={handleDisconnectEndpoints}
         onRotateSelectedLeft={() => handleRotateSelected(-ROTATION_STEP_DEG)}
@@ -293,10 +341,19 @@ function App() {
         canRedo={canRedo}
         canToggleGroundSelection={canToggleGroundSelection}
         isSelectionGrounded={isSelectionGrounded}
+        canExportProject={Boolean(activeProject)}
         debugMode={debugMode}
         drawingTool={drawingTool}
         onDrawingToolChange={setDrawingTool}
         onDimensionAction={handleDimensionAction}
+      />
+
+      <input
+        ref={importInputRef}
+        type="file"
+        accept="application/json"
+        className="hidden"
+        onChange={handleImportFile}
       />
 
       <div className="app-main-row flex flex-1 min-h-0 overflow-hidden">

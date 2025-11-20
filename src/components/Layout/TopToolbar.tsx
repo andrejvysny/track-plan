@@ -8,6 +8,7 @@ interface TopToolbarProps {
   onReload: () => void
   onResetLayout: () => void
   onExportSvg: () => void
+  onExportJson: () => void
   onImport: () => void
   onConnectEndpoints: () => void
   onDisconnectEndpoints: () => void
@@ -26,6 +27,7 @@ interface TopToolbarProps {
   canRedo: boolean
   canToggleGroundSelection: boolean
   isSelectionGrounded: boolean
+  canExportProject: boolean
   debugMode: boolean
   drawingTool: ShapeType | null
   onDrawingToolChange: (tool: ShapeType | null) => void
@@ -38,6 +40,7 @@ export function TopToolbar({
   // onReload,
   // onResetLayout,
   onExportSvg,
+  onExportJson,
   onImport,
   onConnectEndpoints,
   onDisconnectEndpoints,
@@ -56,6 +59,7 @@ export function TopToolbar({
   canRedo,
   canToggleGroundSelection,
   isSelectionGrounded,
+  canExportProject,
   debugMode,
   drawingTool,
   onDrawingToolChange,
@@ -78,6 +82,8 @@ export function TopToolbar({
   const shapeButtonActive =
     'border-green-400 bg-green-500/30 text-green-200 hover:border-green-300 hover:bg-green-500/40'
   const iconButton = 'rounded border border-slate-800 bg-slate-900 p-2 text-slate-100 transition hover:border-slate-600 hover:bg-slate-800 hover:text-slate-100'
+  const neutralButton =
+    'border-slate-800 bg-slate-900 text-slate-100 hover:border-slate-600 hover:bg-slate-800 hover:text-slate-100 disabled:border-slate-800 disabled:bg-slate-900/70 disabled:text-slate-600'
   return (
     <header className="toolbar-top flex h-12 items-center justify-between border-b border-slate-800 bg-slate-950 px-4 text-slate-100">
       <div>
@@ -230,14 +236,23 @@ export function TopToolbar({
           <button
             type="button"
             onClick={onExportSvg}
-            className={`${baseControlStyles} border-slate-800 bg-slate-900 text-slate-100 hover:border-slate-600 hover:bg-slate-800 hover:text-slate-100`}
+            disabled={!canExportProject}
+            className={`${baseControlStyles} ${neutralButton}`}
           >
             Export SVG
           </button>
           <button
             type="button"
+            onClick={onExportJson}
+            disabled={!canExportProject}
+            className={`${baseControlStyles} ${neutralButton}`}
+          >
+            Export JSON
+          </button>
+          <button
+            type="button"
             onClick={onImport}
-            className={`${baseControlStyles} border-slate-800 bg-slate-900 text-slate-100 hover:border-slate-600 hover:bg-slate-800 hover:text-slate-100`}
+            className={`${baseControlStyles} ${neutralButton}`}
           >
             Import
           </button>

@@ -5,6 +5,7 @@ import { createNewProject } from '../types/project'
 import { createDefaultLayoutState } from './layoutState'
 import { useLocalStorageState } from '../hooks/useLocalStorageState'
 import { cloneLayoutState } from '../utils/cloneLayout'
+import type { ProjectImportData } from '../utils/projectSerialization'
 
 export interface ProjectsState {
   projects: Project[]
@@ -209,6 +210,31 @@ export function useProjectsState() {
     })
   }, [setProjectsState, setHistoryMap])
 
+  const addImportedProject = useCallback(
+    (imported: ProjectImportData) => {
+      const baseProject = createNewProject(imported.name, imported.layout)
+      const importedProject: Project = {
+        ...baseProject,
+        name: imported.name,
+        createdAt: imported.createdAt ?? baseProject.createdAt,
+        updatedAt: new Date().toISOString(),
+        layout: baseProject.layout,
+      }
+
+      setProjectsState((previous) => ({
+        ...previous,
+        projects: [...previous.projects, importedProject],
+        activeProjectId: importedProject.id,
+      }))
+
+      setHistoryMap((historyPrevious) => ({
+        ...historyPrevious,
+        [importedProject.id]: { undoStack: [], redoStack: [] },
+      }))
+    },
+    [setProjectsState, setHistoryMap],
+  )
+
   const renameProject = useCallback(
     (id: string, newName: string) => {
       setProjectsState((previous) => ({
@@ -280,6 +306,7 @@ export function useProjectsState() {
     createProject,
     deleteProject,
     renameProject,
+    addImportedProject,
     redo,
     reloadFromLocalStorage,
     setActiveProjectId,
