@@ -78,8 +78,6 @@ export function TopToolbar({
   const shapeButtonActive =
     'border-green-400 bg-green-500/30 text-green-200 hover:border-green-300 hover:bg-green-500/40'
   const iconButton = 'rounded border border-slate-800 bg-slate-900 p-2 text-slate-100 transition hover:border-slate-600 hover:bg-slate-800 hover:text-slate-100'
-  const projectActionButton =
-    'rounded border border-slate-800 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400 transition hover:border-slate-600 hover:text-slate-100 disabled:border-slate-800 disabled:text-slate-600 disabled:opacity-60 disabled:cursor-not-allowed focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500/60'
   return (
     <header className="toolbar-top flex h-12 items-center justify-between border-b border-slate-800 bg-slate-950 px-4 text-slate-100">
       <div>
@@ -87,27 +85,7 @@ export function TopToolbar({
         <p className="text-xs text-slate-400">
           {activeProject ? `Project • ${activeProject.name}` : 'No project selected'}
         </p>
-        <div className="mt-1 flex flex-wrap items-center gap-2">
-          <button type="button" onClick={onNewProject} className={projectActionButton}>
-            New project
-          </button>
-          <button
-            type="button"
-            onClick={onReload}
-            disabled={!activeProject}
-            className={projectActionButton}
-          >
-            Reload
-          </button>
-          <button
-            type="button"
-            onClick={onResetLayout}
-            disabled={!activeProject}
-            className={projectActionButton}
-          >
-            Reset layout
-          </button>
-        </div>
+
       </div>
       <div className="flex flex-1 items-center justify-between gap-4 text-xs">
         <div className="flex items-center gap-3">

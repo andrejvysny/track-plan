@@ -1,14 +1,17 @@
 import { useCallback, useMemo, useRef, useState } from 'react'
-import type { TrackComponentDefinition } from './types/trackSystem'
+import type { TrackComponentDefinition, TrackComponentType } from './types/trackSystem'
 import { Canvas, type CanvasHandle } from './components/Layout/Canvas'
 import { ComponentsSidebar } from './components/Layout/ComponentsSidebar'
 import { ProjectsSidebar } from './components/Layout/ProjectsSidebar'
 import { TopToolbar } from './components/Layout/TopToolbar'
+import { TrackUsageCounter } from './components/Layout/TrackUsageCounter'
 import { useProjectsState } from './state/projectsState'
 import { buildLayoutSvgString } from './export/exportSvg'
 import type { EndpointRef } from './types/trackSystem'
 import type { ShapeType } from './types/layout'
 import { ROTATION_STEP_DEG } from './constants/layout'
+import { TRACK_COMPONENT_TYPES } from './constants/trackUsage'
+import type { TrackUsageComponentCount, TrackUsageSummary } from './types/trackUsage'
 import { connectionMatchesEndpoints } from './utils/connectionUtils'
 
 function App() {
@@ -39,6 +42,60 @@ function App() {
       activeLayout?.trackSystems.find((system) => system.id === activeLayout.activeTrackSystemId) ?? null,
     [activeLayout],
   )
+
+  const trackUsageSummary = useMemo<TrackUsageSummary>(() => {
+    const countsByType = TRACK_COMPONENT_TYPES.reduce<Record<TrackComponentType, number>>((acc, type) => {
+      acc[type] = 0
+      return acc
+    }, {} as Record<TrackComponentType, number>)
+
+    if (!activeLayout || !activeTrackSystem) {
+      return {
+        totalCount: 0,
+        countsByType,
+        componentCounts: [],
+      }
+    }
+
+    const componentCountMap = new Map<string, TrackUsageComponentCount>()
+
+    activeTrackSystem.components.forEach((component) => {
+      componentCountMap.set(component.id, {
+        componentId: component.id,
+        label: component.label,
+        type: component.type,
+        article: component.article,
+        count: 0,
+      })
+    })
+
+    activeLayout.placedItems.forEach((item) => {
+      const existingEntry = componentCountMap.get(item.componentId)
+      const type = existingEntry?.type ?? 'other'
+      countsByType[type] += 1
+
+      if (existingEntry) {
+        existingEntry.count += 1
+      } else {
+        componentCountMap.set(item.componentId, {
+          componentId: item.componentId,
+          label: item.componentId,
+          type,
+          count: 1,
+        })
+      }
+    })
+
+    const componentCounts = Array.from(componentCountMap.values()).filter((entry) => entry.count > 0)
+
+    return {
+      totalCount: activeLayout.placedItems.length,
+      countsByType,
+      componentCounts,
+    }
+  }, [activeLayout, activeTrackSystem])
+
+  const { totalCount: usageTotalCount, countsByType, componentCounts } = trackUsageSummary
 
   const selectedItems = useMemo(
     () => activeLayout?.placedItems.filter((item) => selectedItemIds.has(item.id)) ?? [],
@@ -239,8 +296,13 @@ function App() {
 
         <ComponentsSidebar trackSystem={activeTrackSystem} onComponentClick={handleComponentClick} />
       </div>
+      <TrackUsageCounter
+        totalCount={usageTotalCount}
+        typeCounts={countsByType}
+        componentCounts={componentCounts}
+      />
     </div>
-  )
+)
 }
 
 export default App
