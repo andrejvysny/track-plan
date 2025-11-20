@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { TrackComponentDefinition, TrackComponentType } from './types/trackSystem'
 import { Canvas, type CanvasHandle } from './components/Layout/Canvas'
 import { ComponentsSidebar } from './components/Layout/ComponentsSidebar'
@@ -42,6 +42,36 @@ function App() {
       activeLayout?.trackSystems.find((system) => system.id === activeLayout.activeTrackSystemId) ?? null,
     [activeLayout],
   )
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      // Ignore if typing in an input
+      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) {
+        return
+      }
+
+      // Ignore if content editable is focused (e.g. text shape editor)
+      if ((event.target as HTMLElement).isContentEditable) {
+        return
+      }
+
+      const isMod = event.ctrlKey || event.metaKey
+      const isShift = event.shiftKey
+
+      if (isMod && !isShift && event.key.toLowerCase() === 'z') {
+        event.preventDefault()
+        if (canUndo) undo()
+      }
+
+      if ((isMod && isShift && event.key.toLowerCase() === 'z') || (isMod && event.key.toLowerCase() === 'y')) {
+        event.preventDefault()
+        if (canRedo) redo()
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [canUndo, canRedo, undo, redo])
 
   const trackUsageSummary = useMemo<TrackUsageSummary>(() => {
     const countsByType = TRACK_COMPONENT_TYPES.reduce<Record<TrackComponentType, number>>((acc, type) => {
@@ -302,7 +332,7 @@ function App() {
         componentCounts={componentCounts}
       />
     </div>
-)
+  )
 }
 
 export default App

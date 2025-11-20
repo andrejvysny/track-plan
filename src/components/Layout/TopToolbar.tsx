@@ -34,9 +34,9 @@ interface TopToolbarProps {
 
 export function TopToolbar({
   activeProject,
-  onNewProject,
-  onReload,
-  onResetLayout,
+  // onNewProject,
+  // onReload,
+  // onResetLayout,
   onExportSvg,
   onImport,
   onConnectEndpoints,

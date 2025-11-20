@@ -65,22 +65,30 @@ export function useProjectsState() {
 
   const updateActiveProjectLayout = useCallback(
     (updater: (layout: LayoutState) => LayoutState, options?: { recordHistory?: boolean }) => {
-      let recordedLayout: LayoutState | null = null
-      let projectId: string | null = null
-
       setProjectsState((previous) => {
         if (!previous.activeProjectId) {
           return previous
         }
 
         const activeId = previous.activeProjectId
+        const currentProject = previous.projects.find((p) => p.id === activeId)
+
+        if (!currentProject) {
+          return previous
+        }
+
+        // Record history BEFORE the update if requested (default true)
+        if (options?.recordHistory !== false) {
+          // We need to side-effect the history update here because we need the *current* state
+          // before it's overwritten. This is safe because setHistoryMap uses its own functional update
+          // and doesn't depend on the render cycle for this specific value.
+          pushHistoryEntry(activeId, currentProject.layout)
+        }
+
         const updatedProjects = previous.projects.map((project) => {
           if (project.id !== activeId) {
             return project
           }
-
-          projectId = project.id
-          recordedLayout = project.layout
 
           return {
             ...project,
@@ -94,14 +102,6 @@ export function useProjectsState() {
           projects: updatedProjects,
         }
       })
-
-      if (options?.recordHistory === false) {
-        return
-      }
-
-      if (projectId && recordedLayout) {
-        pushHistoryEntry(projectId, recordedLayout)
-      }
     },
     [pushHistoryEntry, setProjectsState],
   )
@@ -216,10 +216,10 @@ export function useProjectsState() {
         projects: previous.projects.map((project) =>
           project.id === id
             ? {
-                ...project,
-                name: newName,
-                updatedAt: new Date().toISOString(),
-              }
+              ...project,
+              name: newName,
+              updatedAt: new Date().toISOString(),
+            }
             : project,
         ),
       }))
@@ -270,7 +270,7 @@ export function useProjectsState() {
     } catch (error) {
       console.warn('Unable to reload projects from localStorage', error)
     }
-    }, [setProjectsState, setHistoryMap])
+  }, [setProjectsState, setHistoryMap])
 
   return {
     projectsState,
