@@ -29,6 +29,7 @@ interface TopToolbarProps {
   debugMode: boolean
   drawingTool: ShapeType | null
   onDrawingToolChange: (tool: ShapeType | null) => void
+  onDimensionAction?: (type: 'center' | 'inner' | 'outer') => boolean
 }
 
 export function TopToolbar({
@@ -58,6 +59,7 @@ export function TopToolbar({
   debugMode,
   drawingTool,
   onDrawingToolChange,
+  onDimensionAction,
 }: TopToolbarProps) {
   const baseControlStyles =
     'rounded border px-2 py-1 font-semibold transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2'
@@ -152,6 +154,38 @@ export function TopToolbar({
               title="Add Text"
             >
               T
+            </button>
+          </div>
+          <div className="flex items-center gap-2 border-r border-slate-800 pr-3">
+            <span className="text-xs text-slate-400">Dim:</span>
+            <button
+              type="button"
+              onClick={() => {
+                if (onDimensionAction && onDimensionAction('center')) {
+                  return
+                }
+                onDrawingToolChange(drawingTool === 'dimension' ? null : 'dimension')
+              }}
+              className={`${baseControlStyles} ${drawingTool === 'dimension' ? shapeButtonActive : shapeButton}`}
+              title="Center to Center (or Draw Custom)"
+            >
+              ⟷
+            </button>
+            <button
+              type="button"
+              onClick={() => onDimensionAction?.('inner')}
+              className={`${baseControlStyles} ${shapeButton}`}
+              title="Inner Edge to Inner Edge"
+            >
+              →←
+            </button>
+            <button
+              type="button"
+              onClick={() => onDimensionAction?.('outer')}
+              className={`${baseControlStyles} ${shapeButton}`}
+              title="Outer Edge to Outer Edge"
+            >
+              ←→
             </button>
           </div>
         </div>

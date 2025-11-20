@@ -29,7 +29,7 @@ function App() {
 
   const activeLayout = activeProject?.layout ?? null
   const canvasRef = useRef<CanvasHandle | null>(null)
-  const [selectedItemId, setSelectedItemId] = useState<string | null>(null)
+  const [selectedItemIds, setSelectedItemIds] = useState<Set<string>>(new Set())
   const [selectedEndpoints, setSelectedEndpoints] = useState<EndpointRef[]>([])
   const [debugMode, setDebugMode] = useState(false)
   const [drawingTool, setDrawingTool] = useState<ShapeType | null>(null)
@@ -40,19 +40,19 @@ function App() {
     [activeLayout],
   )
 
-  const selectedItem = useMemo(
-    () => activeLayout?.placedItems.find((item) => item.id === selectedItemId) ?? null,
-    [activeLayout, selectedItemId],
+  const selectedItems = useMemo(
+    () => activeLayout?.placedItems.filter((item) => selectedItemIds.has(item.id)) ?? [],
+    [activeLayout, selectedItemIds],
   )
-  const selectedItemConnected = useMemo(() => {
-    if (!selectedItemId || !activeLayout) return false
+  const selectedItemsConnected = useMemo(() => {
+    if (selectedItemIds.size === 0 || !activeLayout) return false
     return Boolean(
       activeLayout.connections?.some((connection) =>
-        connection.endpoints.some((endpoint) => endpoint.itemId === selectedItemId),
+        connection.endpoints.some((endpoint) => selectedItemIds.has(endpoint.itemId)),
       ),
     )
-  }, [activeLayout, selectedItemId])
-  const selectedItemIsGrounded = Boolean(selectedItem?.isGrounded)
+  }, [activeLayout, selectedItemIds])
+  const isSelectionGrounded = selectedItems.some((item) => item.isGrounded)
 
   const handleRenameProject = (id: string) => {
     const project = projectsState.projects.find((candidate) => candidate.id === id)
@@ -147,19 +147,27 @@ function App() {
     canvasRef.current?.deleteSelectedItem()
   }
 
+  const handleDimensionAction = (type: 'center' | 'inner' | 'outer' = 'center') => {
+    const created = canvasRef.current?.addDimensionBetweenSelectedTracks(type) ?? false
+    if (created) {
+      setDrawingTool(null)
+    }
+    return created
+  }
+
   const handleToggleGrounded = () => {
-    if (!selectedItemId) return
+    if (selectedItemIds.size === 0) return
     updateActiveProjectLayout((layout) => ({
       ...layout,
       placedItems: layout.placedItems.map((item) =>
-        item.id === selectedItemId ? { ...item, isGrounded: !item.isGrounded } : item,
+        selectedItemIds.has(item.id) ? { ...item, isGrounded: !item.isGrounded } : item,
       ),
     }))
   }
 
-  const canRotateSelection = Boolean(selectedItemId) && !selectedItemConnected && !selectedItemIsGrounded
+  const canRotateSelection = selectedItemIds.size > 0 && !selectedItemsConnected && !isSelectionGrounded
   // Note: Shape deletion is handled internally by Canvas, so we only check for item selection here
-  const canDeleteSelection = Boolean(selectedItemId)
+  const canDeleteSelection = selectedItemIds.size > 0
   const canConnectEndpoints = selectedEndpoints.length === 2
   const canDisconnectEndpoints = useMemo(() => {
     if (!activeLayout) return false
@@ -170,26 +178,26 @@ function App() {
       ),
     )
   }, [activeLayout, selectedEndpoints])
-  const canToggleGroundSelection = Boolean(selectedItemId)
+  const canToggleGroundSelection = selectedItemIds.size > 0
 
   return (
     <div className="app-root flex h-screen flex-col bg-slate-950 text-slate-100">
       <TopToolbar
         activeProject={activeProject}
-          onNewProject={createProject}
-          onReload={reloadFromLocalStorage}
-          onResetLayout={handleResetLayout}
-          onExportSvg={handleExportSvg}
-          onImport={handleImportStub}
-          onConnectEndpoints={handleConnectEndpoints}
-          onDisconnectEndpoints={handleDisconnectEndpoints}
-          onRotateSelectedLeft={() => handleRotateSelected(-ROTATION_STEP_DEG)}
-          onRotateSelectedRight={() => handleRotateSelected(ROTATION_STEP_DEG)}
-          onDeleteSelected={handleDeleteSelected}
-          onToggleGrounded={handleToggleGrounded}
-          onUndo={undo}
-          onRedo={redo}
-          onToggleDebug={() => setDebugMode((prev) => !prev)}
+        onNewProject={createProject}
+        onReload={reloadFromLocalStorage}
+        onResetLayout={handleResetLayout}
+        onExportSvg={handleExportSvg}
+        onImport={handleImportStub}
+        onConnectEndpoints={handleConnectEndpoints}
+        onDisconnectEndpoints={handleDisconnectEndpoints}
+        onRotateSelectedLeft={() => handleRotateSelected(-ROTATION_STEP_DEG)}
+        onRotateSelectedRight={() => handleRotateSelected(ROTATION_STEP_DEG)}
+        onDeleteSelected={handleDeleteSelected}
+        onToggleGrounded={handleToggleGrounded}
+        onUndo={undo}
+        onRedo={redo}
+        onToggleDebug={() => setDebugMode((prev) => !prev)}
         canConnectEndpoints={canConnectEndpoints}
         canDisconnectEndpoints={canDisconnectEndpoints}
         canRotateSelection={canRotateSelection}
@@ -197,10 +205,11 @@ function App() {
         canUndo={canUndo}
         canRedo={canRedo}
         canToggleGroundSelection={canToggleGroundSelection}
-        isSelectionGrounded={selectedItemIsGrounded}
+        isSelectionGrounded={isSelectionGrounded}
         debugMode={debugMode}
         drawingTool={drawingTool}
         onDrawingToolChange={setDrawingTool}
+        onDimensionAction={handleDimensionAction}
       />
 
       <div className="app-main-row flex flex-1 min-h-0 overflow-hidden">
@@ -214,18 +223,18 @@ function App() {
         />
 
         <div className="flex flex-1 overflow-hidden">
-            <Canvas
-              ref={canvasRef}
-              layout={activeLayout}
-              trackSystem={activeTrackSystem}
-              onUpdateLayout={updateActiveProjectLayout}
-              onSelectedItemChange={setSelectedItemId}
-              onSelectedEndpointsChange={setSelectedEndpoints}
-              debugMode={debugMode}
-              drawingTool={drawingTool}
-              undo={undo}
-              redo={redo}
-            />
+          <Canvas
+            ref={canvasRef}
+            layout={activeLayout}
+            trackSystem={activeTrackSystem}
+            onUpdateLayout={updateActiveProjectLayout}
+            onSelectionChange={(ids) => setSelectedItemIds(new Set(ids))}
+            onSelectedEndpointsChange={setSelectedEndpoints}
+            debugMode={debugMode}
+            drawingTool={drawingTool}
+            undo={undo}
+            redo={redo}
+          />
         </div>
 
         <ComponentsSidebar trackSystem={activeTrackSystem} onComponentClick={handleComponentClick} />

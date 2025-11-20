@@ -12,6 +12,8 @@ import {
   type WheelEvent,
 } from 'react'
 import type {
+  CanvasDimensionShape,
+  CanvasPrimitiveShape,
   CanvasShape,
   CanvasTextShape,
   EndpointConnection,
@@ -47,7 +49,7 @@ type CanvasProps = {
   layout: LayoutState | null
   trackSystem: TrackSystemDefinition | null
   onUpdateLayout: (updater: (layout: LayoutState) => LayoutState) => void
-  onSelectedItemChange?: (itemId: string | null) => void
+  onSelectionChange?: (itemIds: string[]) => void
   onSelectedEndpointsChange?: (endpoints: EndpointRef[]) => void
   debugMode?: boolean
   drawingTool?: ShapeType | null
@@ -60,6 +62,7 @@ export interface CanvasHandle {
   disconnectSelectedEndpoints(): void
   rotateSelected(deltaDeg: number): void
   deleteSelectedItem(): void
+  addDimensionBetweenSelectedTracks(type?: 'center' | 'inner' | 'outer'): boolean
 }
 
 type DragPreview = WorldTransform
@@ -109,6 +112,11 @@ const LABEL_OFFSET_MM = 18
 const SHAPE_STROKE_COLOR = 'white'
 const SHAPE_STROKE_WIDTH = 2
 const SELECTED_SHAPE_STROKE_COLOR = '#60a5fa'
+const DIMENSION_OFFSET_MM = 12
+const DIMENSION_TICK_LENGTH_MM = 8
+const DIMENSION_TEXT_PADDING_MM = 2
+const DIMENSION_MIN_LENGTH_MM = 4
+const DIMENSION_SNAP_DISTANCE_MM = 24
 
 const estimateTextWidth = (text: string, fontSize: number) => {
   const length = Math.max(text.length, 1)
@@ -133,14 +141,77 @@ const computeTextDimensions = (dx: number, dy: number, enforceSquare: boolean) =
   return { width, height }
 }
 
-const normalizeShapeType = (shape: CanvasShape): CanvasShape['type'] => shape.type
+const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max)
+
+const getDimensionGeometry = (shape: CanvasDimensionShape) => {
+  const angleRad = (shape.rotationDeg / 180) * Math.PI
+  const dir = { x: Math.cos(angleRad), y: Math.sin(angleRad) }
+  const normal = { x: -dir.y, y: dir.x }
+  const half = shape.length / 2
+  const start = { x: shape.x - dir.x * half, y: shape.y - dir.y * half }
+  const end = { x: shape.x + dir.x * half, y: shape.y + dir.y * half }
+  const offsetStart = { x: start.x + normal.x * shape.offsetMm, y: start.y + normal.y * shape.offsetMm }
+  const offsetEnd = { x: end.x + normal.x * shape.offsetMm, y: end.y + normal.y * shape.offsetMm }
+  return { start, end, offsetStart, offsetEnd, dir, normal }
+}
+
+const formatDimensionLabel = (shape: CanvasDimensionShape) => shape.label ?? `${shape.length.toFixed(1)} mm`
+
+const isDimensionShape = (shape: CanvasShape): shape is CanvasDimensionShape => shape.type === 'dimension'
+
+const projectPointToRectanglePerimeter = (
+  shape: CanvasPrimitiveShape,
+  point: { x: number; y: number },
+) => {
+  const width = shape.width
+  const height = shape.height ?? shape.width
+  const halfWidth = width / 2
+  const halfHeight = height / 2
+  const local = rotatePointLocal(point.x - shape.x, point.y - shape.y, -shape.rotationDeg)
+  const clampedX = clamp(local.x, -halfWidth, halfWidth)
+  const clampedY = clamp(local.y, -halfHeight, halfHeight)
+
+  // Snap to closest edge
+  const distToVertical = Math.min(Math.abs(clampedX - -halfWidth), Math.abs(clampedX - halfWidth))
+  const distToHorizontal = Math.min(Math.abs(clampedY - -halfHeight), Math.abs(clampedY - halfHeight))
+  let snappedLocal: { x: number; y: number }
+  if (distToVertical < distToHorizontal) {
+    const snapX = Math.abs(clampedX + halfWidth) < Math.abs(clampedX - halfWidth) ? -halfWidth : halfWidth
+    snappedLocal = { x: snapX, y: clampedY }
+  } else {
+    const snapY = Math.abs(clampedY + halfHeight) < Math.abs(clampedY - halfHeight) ? -halfHeight : halfHeight
+    snappedLocal = { x: clampedX, y: snapY }
+  }
+
+  const rotated = rotatePointLocal(snappedLocal.x, snappedLocal.y, shape.rotationDeg)
+  const world = { x: rotated.x + shape.x, y: rotated.y + shape.y }
+  const distance = Math.hypot(world.x - point.x, world.y - point.y)
+  return { point: world, distance }
+}
+
+const projectPointToCirclePerimeter = (shape: CanvasPrimitiveShape, point: { x: number; y: number }) => {
+  const radius = shape.width / 2
+  const dx = point.x - shape.x
+  const dy = point.y - shape.y
+  const distanceToCenter = Math.hypot(dx, dy)
+  if (distanceToCenter < 1e-6) {
+    return {
+      point: { x: shape.x + radius, y: shape.y },
+      distance: radius,
+    }
+  }
+  const scale = radius / distanceToCenter
+  const snapped = { x: shape.x + dx * scale, y: shape.y + dy * scale }
+  const distance = Math.abs(distanceToCenter - radius)
+  return { point: snapped, distance }
+}
 
 export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   {
     layout,
     trackSystem,
     onUpdateLayout,
-    onSelectedItemChange,
+    onSelectionChange,
     onSelectedEndpointsChange,
     debugMode = false,
     drawingTool = null,
@@ -154,7 +225,7 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   const capturedPointerIdRef = useRef<number | null>(null)
   const canvasWrapperRef = useRef<HTMLDivElement | null>(null)
 
-  const [selectedItemId, setSelectedItemId] = useState<string | null>(null)
+  const [selectedItemIds, setSelectedItemIds] = useState<Set<string>>(new Set())
   const [selectedShapeId, setSelectedShapeId] = useState<string | null>(null)
   const [selectedEndpoints, setSelectedEndpoints] = useState<EndpointRef[]>([])
   const [draggingItemId, setDraggingItemId] = useState<string | null>(null)
@@ -165,7 +236,8 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   const [dragGroupIds, setDragGroupIds] = useState<string[] | null>(null)
   const [dragGroupDelta, setDragGroupDelta] = useState<{ x: number; y: number } | null>(null)
   const [snappedEndpoints, setSnappedEndpoints] = useState<{ moving: EndpointRef; target: EndpointRef } | null>(null)
-  
+  const [dimensionSelection, setDimensionSelection] = useState<string[]>([])
+
   // Drawing state
   const [isDrawing, setIsDrawing] = useState(false)
   const [drawStart, setDrawStart] = useState<{ x: number; y: number } | null>(null)
@@ -307,14 +379,23 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   const ensureSelectionIsValid = useCallback(
     (nextLayout: LayoutState | null) => {
       if (!nextLayout) {
-        setSelectedItemId(null)
+        setSelectedItemIds(new Set())
         setSelectedShapeId(null)
         setSelectedEndpoints([])
+        setDimensionSelection([])
         return
       }
 
-      if (selectedItemId && !nextLayout.placedItems.some((item) => item.id === selectedItemId)) {
-        setSelectedItemId(null)
+      if (selectedItemIds.size > 0) {
+        const validIds = new Set<string>()
+        selectedItemIds.forEach((id) => {
+          if (nextLayout.placedItems.some((item) => item.id === id)) {
+            validIds.add(id)
+          }
+        })
+        if (validIds.size !== selectedItemIds.size) {
+          setSelectedItemIds(validIds)
+        }
       }
 
       if (selectedShapeId && !nextLayout.shapes.some((shape) => shape.id === selectedShapeId)) {
@@ -329,7 +410,7 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
         previous.filter((endpoint) => nextLayout.placedItems.some((item) => item.id === endpoint.itemId)),
       )
     },
-    [selectedItemId, selectedShapeId, editingTextId],
+    [selectedItemIds, selectedShapeId, editingTextId],
   )
 
   useEffect(() => {
@@ -337,8 +418,8 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   }, [ensureSelectionIsValid, layout])
 
   useEffect(() => {
-    onSelectedItemChange?.(selectedItemId)
-  }, [onSelectedItemChange, selectedItemId])
+    onSelectionChange?.(Array.from(selectedItemIds))
+  }, [onSelectionChange, selectedItemIds])
 
   useEffect(() => {
     onSelectedEndpointsChange?.(selectedEndpoints)
@@ -410,24 +491,6 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     [viewWidth, viewHeight],
   )
 
-  const getItemTransform = useCallback(
-    (item: PlacedItem): DragPreview => {
-      const base = dragGroupStartTransformsRef.current?.[item.id]
-      if (base && dragGroupDelta && dragGroupIds?.includes(item.id)) {
-        return {
-          x: base.x + dragGroupDelta.x,
-          y: base.y + dragGroupDelta.y,
-          rotationDeg: base.rotationDeg,
-        }
-      }
-      if (draggingItemId === item.id && dragPreview) {
-        return dragPreview
-      }
-      return { x: item.x, y: item.y, rotationDeg: item.rotationDeg }
-    },
-    [dragGroupDelta, dragGroupIds, dragPreview, draggingItemId],
-  )
-
   const listConnectorEntries = useCallback((geometry: ReturnType<typeof getComponentGeometry>): ConnectorEntry[] => {
     const entries: ConnectorEntry[] = [
       { key: 'start', local: geometry.start },
@@ -448,6 +511,86 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       return geometry.extraConnectors?.[key] ?? null
     },
     [],
+  )
+
+  const snapMeasurementPoint = useCallback(
+    (point: { x: number; y: number }) => {
+      let bestPoint = point
+      let bestDistance = DIMENSION_SNAP_DISTANCE_MM
+
+      layout?.placedItems.forEach((item) => {
+        const centerDistance = Math.hypot(item.x - point.x, item.y - point.y)
+        if (centerDistance < bestDistance) {
+          bestDistance = centerDistance
+          bestPoint = { x: item.x, y: item.y }
+        }
+
+        const geometry = geometryCache.get(item.componentId)
+        if (!geometry) return
+        const transform = { x: item.x, y: item.y, rotationDeg: item.rotationDeg }
+        listConnectorEntries(geometry).forEach(({ local }) => {
+          const connector = transformConnector(local, transform)
+          const distance = Math.hypot(connector.xMm - point.x, connector.yMm - point.y)
+          if (distance < bestDistance) {
+            bestDistance = distance
+            bestPoint = { x: connector.xMm, y: connector.yMm }
+          }
+        })
+      })
+
+      layout?.shapes.forEach((shape) => {
+        if (isDimensionShape(shape)) return
+        if (shape.type === 'rectangle') {
+          const projection = projectPointToRectanglePerimeter(shape, point)
+          if (projection.distance < bestDistance) {
+            bestDistance = projection.distance
+            bestPoint = projection.point
+          }
+        } else if (shape.type === 'circle') {
+          const projection = projectPointToCirclePerimeter(shape, point)
+          if (projection.distance < bestDistance) {
+            bestDistance = projection.distance
+            bestPoint = projection.point
+          }
+        }
+      })
+
+      return bestPoint
+    },
+    [geometryCache, layout, listConnectorEntries],
+  )
+
+  const getItemTransform = useCallback(
+    (item: PlacedItem): DragPreview => {
+      const base = dragGroupStartTransformsRef.current?.[item.id]
+      if (base && dragGroupDelta && dragGroupIds?.includes(item.id)) {
+        return {
+          x: base.x + dragGroupDelta.x,
+          y: base.y + dragGroupDelta.y,
+          rotationDeg: base.rotationDeg,
+        }
+      }
+      if (draggingItemId === item.id && dragPreview) {
+        return dragPreview
+      }
+      return { x: item.x, y: item.y, rotationDeg: item.rotationDeg }
+    },
+    [dragGroupDelta, dragGroupIds, dragPreview, draggingItemId],
+  )
+
+  const getItemCenterDirection = useCallback(
+    (item: PlacedItem) => {
+      const geometry = geometryCache.get(item.componentId)
+      if (!geometry) return null
+      const start = transformConnector(geometry.start, { x: item.x, y: item.y, rotationDeg: item.rotationDeg })
+      const end = transformConnector(geometry.end, { x: item.x, y: item.y, rotationDeg: item.rotationDeg })
+      const dx = end.xMm - start.xMm
+      const dy = end.yMm - start.yMm
+      const length = Math.hypot(dx, dy)
+      if (length < 1e-3) return null
+      return { center: { x: item.x, y: item.y }, dir: { x: dx / length, y: dy / length } }
+    },
+    [geometryCache],
   )
 
   // Auto-connect when dragging ends and endpoints are snapped
@@ -545,8 +688,10 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     const handlePointerUp = () => {
       // Finalize drawing
       if (isDrawing && drawStart && drawCurrent && drawingTool) {
-        const dx = Math.abs(drawCurrent.x - drawStart.x)
-        const dy = Math.abs(drawCurrent.y - drawStart.y)
+        const rawDx = drawCurrent.x - drawStart.x
+        const rawDy = drawCurrent.y - drawStart.y
+        const dx = Math.abs(rawDx)
+        const dy = Math.abs(rawDy)
         const centerX = (drawStart.x + drawCurrent.x) / 2
         const centerY = (drawStart.y + drawCurrent.y) / 2
         let newShape: CanvasShape | null = null
@@ -589,6 +734,31 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
             fontSize: TEXT_FONT_SIZE_MM,
             rotationDeg: 0,
           }
+        } else if (drawingTool === 'dimension') {
+          let dimensionDx = rawDx
+          let dimensionDy = rawDy
+          if (drawShiftActive) {
+            if (Math.abs(dimensionDx) > Math.abs(dimensionDy)) {
+              dimensionDy = 0
+            } else {
+              dimensionDx = 0
+            }
+          }
+          const length = Math.hypot(dimensionDx, dimensionDy)
+          if (length >= DIMENSION_MIN_LENGTH_MM) {
+            const dimensionCenterX = drawStart.x + dimensionDx / 2
+            const dimensionCenterY = drawStart.y + dimensionDy / 2
+            const angleDeg = (Math.atan2(dimensionDy, dimensionDx) * 180) / Math.PI
+            newShape = {
+              id: getId(),
+              type: 'dimension',
+              x: dimensionCenterX,
+              y: dimensionCenterY,
+              length,
+              rotationDeg: normalizeAngle(angleDeg),
+              offsetMm: DIMENSION_OFFSET_MM,
+            }
+          }
         }
 
         if (newShape) {
@@ -614,11 +784,11 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
           shapes: previous.shapes.map((shape) =>
             shape.id === draggingShapeId
               ? {
-                  ...shape,
-                  x: dragPreview.x,
-                  y: dragPreview.y,
-                  rotationDeg: normalizeAngle(dragPreview.rotationDeg),
-                }
+                ...shape,
+                x: dragPreview.x,
+                y: dragPreview.y,
+                rotationDeg: normalizeAngle(dragPreview.rotationDeg),
+              }
               : shape,
           ),
         }))
@@ -657,11 +827,11 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
               placedItems: previous.placedItems.map((item) =>
                 item.id === draggingItemId
                   ? {
-                      ...item,
-                      x: dragPreview.x,
-                      y: dragPreview.y,
-                      rotationDeg: normalizeAngle(dragPreview.rotationDeg),
-                    }
+                    ...item,
+                    x: dragPreview.x,
+                    y: dragPreview.y,
+                    rotationDeg: normalizeAngle(dragPreview.rotationDeg),
+                  }
                   : item,
               ),
             }))
@@ -787,7 +957,7 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
           if (connection) {
             // Connected endpoint: select both endpoints for disconnect
             next = [...connection.endpoints]
-            setSelectedItemId(endpoint.itemId)
+            setSelectedItemIds(new Set([endpoint.itemId]))
             return next
           } else {
             // Unconnected endpoint: select just this one
@@ -796,7 +966,11 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
         }
 
         const latest = next[next.length - 1] ?? null
-        setSelectedItemId(latest?.itemId ?? null)
+        if (latest) {
+          setSelectedItemIds(new Set([latest.itemId]))
+        } else {
+          setSelectedItemIds(new Set())
+        }
         return next
       })
     },
@@ -804,9 +978,10 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   )
 
   const clearSelections = useCallback(() => {
-    setSelectedItemId(null)
+    setSelectedItemIds(new Set())
     setSelectedShapeId(null)
     setSelectedEndpoints([])
+    setDimensionSelection([])
   }, [])
 
   const startTextEditing = useCallback(
@@ -814,12 +989,13 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       editingTextIsNewRef.current = isNew
       setEditingTextId(shape.id)
       setEditingTextValue(shape.text)
+
       setSelectedShapeId(shape.id)
-      setSelectedItemId(null)
+      setSelectedItemIds(new Set())
       setSelectedEndpoints([])
       setDraggingShapeId(null)
     },
-    [setSelectedEndpoints, setSelectedItemId, setSelectedShapeId, setDraggingShapeId],
+    [setSelectedEndpoints, setSelectedItemIds, setSelectedShapeId, setDraggingShapeId],
   )
 
   const finishTextEditing = useCallback(
@@ -896,8 +1072,9 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       if (shapeId) {
         event.stopPropagation()
         setSelectedShapeId(shapeId)
-        setSelectedItemId(null)
+        setSelectedItemIds(new Set())
         setSelectedEndpoints([])
+        setDimensionSelection([])
         // Start dragging shape if not in drawing mode
         const worldPoint = clientPointToWorld({ x: event.clientX, y: event.clientY })
         if (worldPoint && layout) {
@@ -927,17 +1104,32 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     }
 
     const clickedTrackItem = targetElement?.closest('[data-track-item]') ?? false
-    if(clickedTrackItem) {
+    if (clickedTrackItem && !drawingTool) {
+      const trackId = (clickedTrackItem as Element).getAttribute('data-track-item')
+      if (trackId) {
+        const additive = event.shiftKey
+        if (additive) {
+          setDimensionSelection((prev) => {
+            const next = prev.includes(trackId) ? prev : [...prev.slice(-1), trackId]
+            setSelectedItemIds(new Set([trackId]))
+            return next
+          })
+        } else {
+          setDimensionSelection([trackId])
+          setSelectedItemIds(new Set([trackId]))
+        }
+      }
       return
     }
 
     // If in drawing mode, start drawing
     if (drawingTool && worldPoint) {
       event.preventDefault()
+      const anchor = drawingTool === 'dimension' ? snapMeasurementPoint(worldPoint) : worldPoint
       setIsDrawing(true)
       setDrawShiftActive(event.shiftKey)
-      setDrawStart({ x: worldPoint.x, y: worldPoint.y })
-      setDrawCurrent({ x: worldPoint.x, y: worldPoint.y })
+      setDrawStart({ x: anchor.x, y: anchor.y })
+      setDrawCurrent({ x: anchor.x, y: anchor.y })
       capturePointer(event.pointerId)
       clearSelections()
       return
@@ -956,7 +1148,8 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     if (isDrawing && drawStart) {
       const worldPoint = clientPointToWorld({ x: event.clientX, y: event.clientY })
       if (worldPoint) {
-        setDrawCurrent({ x: worldPoint.x, y: worldPoint.y })
+        const anchor = drawingTool === 'dimension' ? snapMeasurementPoint(worldPoint) : worldPoint
+        setDrawCurrent({ x: anchor.x, y: anchor.y })
       }
       setDrawShiftActive(event.shiftKey)
       return
@@ -1037,7 +1230,9 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
 
   const handleWheel = useCallback(
     (event: WheelEvent<SVGSVGElement>) => {
-      event.preventDefault()
+      if (event.cancelable) {
+        event.preventDefault()
+      }
       const svg = svgRef.current
       if (!svg) return
 
@@ -1112,7 +1307,24 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     if (event.button !== 0) return
     const groupIds = getConnectedGroupIds(itemId)
     const groupHasGrounded = groupIds.some((id) => isItemGrounded(id))
-    setSelectedItemId(itemId)
+
+    const additive = event.shiftKey
+    if (additive) {
+      setSelectedItemIds((prev) => {
+        const next = new Set(prev)
+        if (next.has(itemId)) {
+          next.delete(itemId)
+        } else {
+          next.add(itemId)
+        }
+        return next
+      })
+    } else {
+      if (!selectedItemIds.has(itemId)) {
+        setSelectedItemIds(new Set([itemId]))
+      }
+    }
+
     setSelectedEndpoints([])
     if (groupHasGrounded) {
       return
@@ -1221,7 +1433,7 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   const rotateSelected = useCallback(
     (deltaDeg: number) => {
       if (!layout) return
-      
+
       // Handle shape rotation
       if (selectedShapeId) {
         const currentShape = layout.shapes.find((shape) => shape.id === selectedShapeId)
@@ -1247,58 +1459,40 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       }
 
       // Handle item rotation
-      if (!selectedItemId) return
-      if (isItemConnected(selectedItemId) || isItemGrounded(selectedItemId)) return
+      if (selectedItemIds.size === 0) return
 
-      const currentItem = layout.placedItems.find((item) => item.id === selectedItemId)
-      if (!currentItem) return
+      // For now, only rotate if single item selected or all selected items are safe to rotate
+      // TODO: Implement group rotation for multi-selection
+      const selectedArray = Array.from(selectedItemIds)
 
-      const newRotationDeg = normalizeAngle(currentItem.rotationDeg + deltaDeg)
-
-      const pivotEndpoint = selectedEndpoints.find((endpoint) => endpoint.itemId === selectedItemId)
-      const geometry = geometryCache.get(currentItem.componentId) ?? null
-
-      let newX = currentItem.x
-      let newY = currentItem.y
-
-      if (pivotEndpoint && geometry) {
-        const localConnector = getConnectorByKey(geometry, pivotEndpoint.connectorKey)
-        if (localConnector) {
-          const pivotWorld = transformConnector(localConnector, {
-            x: currentItem.x,
-            y: currentItem.y,
-            rotationDeg: currentItem.rotationDeg,
-          })
-          const rotatedLocal = rotatePointLocal(localConnector.xMm, localConnector.yMm, newRotationDeg)
-          newX = pivotWorld.xMm - rotatedLocal.x
-          newY = pivotWorld.yMm - rotatedLocal.y
-        }
-      }
+      // Check if any selected item is connected or grounded
+      if (selectedArray.some(id => isItemConnected(id) || isItemGrounded(id))) return
 
       onUpdateLayout((previous) => ({
         ...previous,
-        placedItems: previous.placedItems.map((item) =>
-          item.id === selectedItemId
-            ? { ...item, x: newX, y: newY, rotationDeg: newRotationDeg }
-            : item,
-        ),
+        placedItems: previous.placedItems.map((item) => {
+          if (!selectedItemIds.has(item.id)) return item
+
+          const newRotationDeg = normalizeAngle(item.rotationDeg + deltaDeg)
+          // Rotate around item center for now
+          return { ...item, rotationDeg: newRotationDeg }
+        }),
       }))
 
-      setDragPreview((previous) =>
-        previous && draggingItemId === selectedItemId
-          ? { ...previous, x: newX, y: newY, rotationDeg: newRotationDeg }
-          : previous,
-      )
+      // Update drag preview if dragging
+      if (draggingItemId && selectedItemIds.has(draggingItemId)) {
+        setDragPreview((previous) => {
+          if (!previous) return previous
+          return { ...previous, rotationDeg: normalizeAngle(previous.rotationDeg + deltaDeg) }
+        })
+      }
     },
     [
       draggingItemId,
       draggingShapeId,
-      geometryCache,
-      getConnectorByKey,
       layout,
       onUpdateLayout,
-      selectedEndpoints,
-      selectedItemId,
+      selectedItemIds,
       selectedShapeId,
       isItemConnected,
       isItemGrounded,
@@ -1319,21 +1513,22 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     }
 
     // Handle item deletion
-    if (!selectedItemId) return
+    if (selectedItemIds.size === 0) return
 
     const filterConnections = (connections?: EndpointConnection[]) =>
       (connections ?? []).filter((connection) =>
-        connection.endpoints.every((endpoint) => endpoint.itemId !== selectedItemId),
+        connection.endpoints.every((endpoint) => !selectedItemIds.has(endpoint.itemId)),
       )
 
     onUpdateLayout((previous) => ({
       ...previous,
-      placedItems: previous.placedItems.filter((item) => item.id !== selectedItemId),
+      placedItems: previous.placedItems.filter((item) => !selectedItemIds.has(item.id)),
       connections: filterConnections(previous.connections),
     }))
-    setSelectedItemId(null)
+    setSelectedItemIds(new Set())
     setSelectedEndpoints([])
-  }, [layout, onUpdateLayout, selectedItemId, selectedShapeId])
+    setDimensionSelection((prev) => prev.filter((id) => !selectedItemIds.has(id)))
+  }, [layout, onUpdateLayout, selectedItemIds, selectedShapeId])
 
   // Connect endpoints reuses the same connector math as snapping: match directions, then translate the moving item.
   const connectSelectedEndpoints = useCallback(() => {
@@ -1368,7 +1563,7 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       } else {
         // Tie-breaker: respect explicit user selection or fall back to firstRef.
         const selectedRef =
-          selectedEndpoints.find((endpoint) => endpoint.itemId === selectedItemId) ?? firstRef
+          selectedEndpoints.find((endpoint) => selectedItemIds.has(endpoint.itemId)) ?? firstRef
         movingRef = selectedRef
         fixedRef = selectedRef === firstRef ? secondRef : firstRef
       }
@@ -1444,7 +1639,7 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     layout,
     onUpdateLayout,
     selectedEndpoints,
-    selectedItemId,
+    selectedItemIds,
     trackSystem,
   ])
 
@@ -1468,8 +1663,96 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       disconnectSelectedEndpoints,
       rotateSelected,
       deleteSelectedItem,
+      addDimensionBetweenSelectedTracks(type: 'center' | 'inner' | 'outer' = 'center') {
+        if (!layout || !trackSystem) return false
+        const itemCandidates =
+          selectedEndpoints.length === 2
+            ? Array.from(new Set(selectedEndpoints.map((ep) => ep.itemId)))
+            : selectedItemIds.size === 2
+              ? Array.from(selectedItemIds)
+              : dimensionSelection.length === 2
+                ? dimensionSelection
+                : []
+        if (itemCandidates.length !== 2) return false
+
+        const [firstId, secondId] = itemCandidates
+        const firstItem = layout.placedItems.find((item) => item.id === firstId)
+        const secondItem = layout.placedItems.find((item) => item.id === secondId)
+        if (!firstItem || !secondItem) return false
+        if (firstItem.trackSystemId !== trackSystem.id || secondItem.trackSystemId !== trackSystem.id) return false
+
+        const firstGeometry = geometryCache.get(firstItem.componentId)
+        const secondGeometry = geometryCache.get(secondItem.componentId)
+        if (!firstGeometry || !secondGeometry) return false
+
+        // Assume standard width from start connector if not available elsewhere
+        // Most tracks have constant width
+        const firstWidth = firstGeometry.start.widthMm
+        const secondWidth = secondGeometry.start.widthMm
+
+        const firstInfo = getItemCenterDirection(firstItem)
+        const secondInfo = getItemCenterDirection(secondItem)
+        if (!firstInfo || !secondInfo) return false
+
+        const dot = firstInfo.dir.x * secondInfo.dir.x + firstInfo.dir.y * secondInfo.dir.y
+        const angle = Math.acos(clamp(dot, -1, 1)) * (180 / Math.PI)
+        const baseDir = angle < 30 || angle > 150 ? firstInfo.dir : firstInfo.dir
+        const normal = { x: -baseDir.y, y: baseDir.x }
+
+        const delta = {
+          x: secondInfo.center.x - firstInfo.center.x,
+          y: secondInfo.center.y - firstInfo.center.y,
+        }
+        const distanceSigned = delta.x * normal.x + delta.y * normal.y
+        let distance = Math.abs(distanceSigned)
+
+        // Adjust distance based on type
+        if (type === 'inner') {
+          distance -= (firstWidth / 2 + secondWidth / 2)
+        } else if (type === 'outer') {
+          distance += (firstWidth / 2 + secondWidth / 2)
+        }
+
+        if (distance < 1e-3) return false
+
+        const center = {
+          x: firstInfo.center.x + normal.x * (distanceSigned / 2),
+          y: firstInfo.center.y + normal.y * (distanceSigned / 2),
+        }
+        const rotationDeg = normalizeAngle((Math.atan2(normal.y, normal.x) * 180) / Math.PI)
+
+        const newShape: CanvasDimensionShape = {
+          id: getId(),
+          type: 'dimension',
+          x: center.x,
+          y: center.y,
+          length: distance,
+          rotationDeg,
+          offsetMm: DIMENSION_OFFSET_MM,
+        }
+
+        onUpdateLayout((previous) => ({
+          ...previous,
+          shapes: [...previous.shapes, newShape],
+        }))
+        setSelectedShapeId(newShape.id)
+        setSelectedItemIds(new Set())
+        return true
+      },
     }),
-    [connectSelectedEndpoints, deleteSelectedItem, disconnectSelectedEndpoints, rotateSelected],
+    [
+      connectSelectedEndpoints,
+      deleteSelectedItem,
+      disconnectSelectedEndpoints,
+      rotateSelected,
+      layout,
+      onUpdateLayout,
+      selectedEndpoints,
+      trackSystem,
+      getItemCenterDirection,
+      dimensionSelection,
+      selectedItemIds,
+    ],
   )
 
   const undoRef = useRef(undo)
@@ -1509,11 +1792,11 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       }
 
       if (event.key.toLowerCase() === 'r') {
-        if (!selectedItemId && !selectedShapeId) return
+        if (selectedItemIds.size === 0 && !selectedShapeId) return
         event.preventDefault()
         rotateSelected(event.shiftKey ? -ROTATION_STEP_DEG : ROTATION_STEP_DEG)
       } else if (event.key === 'Delete' || event.key === 'Backspace') {
-        if (!selectedItemId && !selectedShapeId) return
+        if (selectedItemIds.size === 0 && !selectedShapeId) return
         event.preventDefault()
         deleteSelectedItem()
       } else if (event.key === 'Escape') {
@@ -1524,7 +1807,7 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
 
     window.addEventListener('keydown', handleKey)
     return () => window.removeEventListener('keydown', handleKey)
-  }, [clearSelections, deleteSelectedItem, rotateSelected, selectedItemId, selectedShapeId])
+  }, [clearSelections, deleteSelectedItem, rotateSelected, selectedItemIds, selectedShapeId])
 
   if (!layout || !trackSystem) {
     return (
@@ -1572,7 +1855,7 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
             if (!component || !geometry) return null
 
             const transform = getItemTransform(item)
-            const isSelected = selectedItemId === item.id
+            const isSelected = selectedItemIds.has(item.id)
             const isGrounded = item.isGrounded ?? false
             const connectorEntries = listConnectorEntries(geometry)
             const labelAnchor = computeLabelAnchor(connectorEntries)
@@ -1601,86 +1884,86 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                     strokeLinecap="butt"
                     strokeLinejoin="miter"
                   />
-                {connectorEntries.map(({ key, local }) => {
-                  const isEndpointSelected = selectedEndpoints.some(
-                    (endpoint) => endpoint.itemId === item.id && endpoint.connectorKey === key,
-                  )
-                  const isConnectedEndpoint = isEndpointConnected(item.id, key)
-                  const endpointFill = isEndpointSelected
-                    ? SELECTED_ENDPOINT_COLOR
-                    : isConnectedEndpoint
-                    ? CONNECTED_ENDPOINT_COLOR
-                    : 'transparent'
-                  const endpointStroke = isEndpointSelected
-                    ? SELECTED_ENDPOINT_COLOR
-                    : isConnectedEndpoint
-                    ? CONNECTED_ENDPOINT_COLOR
-                    : '#cbd5f5'
-                  const vectorEndX = local.xMm + (local.dir?.x ?? 0) * ENDPOINT_VECTOR_LENGTH_MM
-                  const vectorEndY = local.yMm + (local.dir?.y ?? 0) * ENDPOINT_VECTOR_LENGTH_MM
-                  // Position label at the end of the vector, offset slightly
-                  const labelOffsetX = (local.dir?.x ?? 0) * (ENDPOINT_VECTOR_LENGTH_MM + 8)
-                  const labelOffsetY = (local.dir?.y ?? 0) * (ENDPOINT_VECTOR_LENGTH_MM + 8)
-                  const labelX = local.xMm + labelOffsetX
-                  const labelY = local.yMm + labelOffsetY
-                  const directionDeg = local.directionDeg ?? 0
-                  return (
-                    <g key={`${item.id}-${key}`}>
-                      {debugMode && (
-                        <line
-                          x1={local.xMm}
-                          y1={local.yMm}
-                          x2={vectorEndX}
-                          y2={vectorEndY}
+                  {connectorEntries.map(({ key, local }) => {
+                    const isEndpointSelected = selectedEndpoints.some(
+                      (endpoint) => endpoint.itemId === item.id && endpoint.connectorKey === key,
+                    )
+                    const isConnectedEndpoint = isEndpointConnected(item.id, key)
+                    const endpointFill = isEndpointSelected
+                      ? SELECTED_ENDPOINT_COLOR
+                      : isConnectedEndpoint
+                        ? CONNECTED_ENDPOINT_COLOR
+                        : 'transparent'
+                    const endpointStroke = isEndpointSelected
+                      ? SELECTED_ENDPOINT_COLOR
+                      : isConnectedEndpoint
+                        ? CONNECTED_ENDPOINT_COLOR
+                        : '#cbd5f5'
+                    const vectorEndX = local.xMm + (local.dir?.x ?? 0) * ENDPOINT_VECTOR_LENGTH_MM
+                    const vectorEndY = local.yMm + (local.dir?.y ?? 0) * ENDPOINT_VECTOR_LENGTH_MM
+                    // Position label at the end of the vector, offset slightly
+                    const labelOffsetX = (local.dir?.x ?? 0) * (ENDPOINT_VECTOR_LENGTH_MM + 8)
+                    const labelOffsetY = (local.dir?.y ?? 0) * (ENDPOINT_VECTOR_LENGTH_MM + 8)
+                    const labelX = local.xMm + labelOffsetX
+                    const labelY = local.yMm + labelOffsetY
+                    const directionDeg = local.directionDeg ?? 0
+                    return (
+                      <g key={`${item.id}-${key}`}>
+                        {debugMode && (
+                          <line
+                            x1={local.xMm}
+                            y1={local.yMm}
+                            x2={vectorEndX}
+                            y2={vectorEndY}
+                            stroke={endpointStroke}
+                            strokeWidth={isEndpointSelected || isConnectedEndpoint ? 2 : 1}
+                            opacity={0.7}
+                            pointerEvents="none"
+                          />
+                        )}
+                        <circle
+                          cx={local.xMm}
+                          cy={local.yMm}
+                          r={ENDPOINT_CIRCLE_RADIUS}
+                          fill={endpointFill}
                           stroke={endpointStroke}
                           strokeWidth={isEndpointSelected || isConnectedEndpoint ? 2 : 1}
-                          opacity={0.7}
-                          pointerEvents="none"
+                          opacity={0.8}
+                          style={{ cursor: 'pointer' }}
+                          onPointerDown={(event) => {
+                            event.stopPropagation()
+                            event.preventDefault()
+                            const additive = event.shiftKey
+                            updateEndpointSelection({ itemId: item.id, connectorKey: key }, additive)
+                          }}
                         />
-                      )}
-                      <circle
-                        cx={local.xMm}
-                        cy={local.yMm}
-                        r={ENDPOINT_CIRCLE_RADIUS}
-                        fill={endpointFill}
-                        stroke={endpointStroke}
-                        strokeWidth={isEndpointSelected || isConnectedEndpoint ? 2 : 1}
-                        opacity={0.8}
-                        style={{ cursor: 'pointer' }}
-                        onPointerDown={(event) => {
-                          event.stopPropagation()
-                          event.preventDefault()
-                          const additive = event.shiftKey
-                          updateEndpointSelection({ itemId: item.id, connectorKey: key }, additive)
-                        }}
-                      />
-                      {debugMode && (
-                        <g pointerEvents="none">
-                          <rect
-                            x={labelX - 20}
-                            y={labelY - 8}
-                            width={40}
-                            height={20}
-                            fill="rgba(0, 0, 0, 0.7)"
-                            rx={2}
-                          />
-                          <text
-                            x={labelX}
-                            y={labelY}
-                            fontSize={8}
-                            fill="#ffffff"
-                            textAnchor="middle"
-                            dominantBaseline="middle"
-                            style={{ userSelect: 'none', fontFamily: 'monospace' }}
-                          >
-                            <tspan x={labelX} dy="0">{key}</tspan>
-                            <tspan x={labelX} dy="10">{directionDeg.toFixed(1)}°</tspan>
-                          </text>
-                        </g>
-                      )}
-                    </g>
-                  )
-                })}
+                        {debugMode && (
+                          <g pointerEvents="none">
+                            <rect
+                              x={labelX - 20}
+                              y={labelY - 8}
+                              width={40}
+                              height={20}
+                              fill="rgba(0, 0, 0, 0.7)"
+                              rx={2}
+                            />
+                            <text
+                              x={labelX}
+                              y={labelY}
+                              fontSize={8}
+                              fill="#ffffff"
+                              textAnchor="middle"
+                              dominantBaseline="middle"
+                              style={{ userSelect: 'none', fontFamily: 'monospace' }}
+                            >
+                              <tspan x={labelX} dy="0">{key}</tspan>
+                              <tspan x={labelX} dy="10">{directionDeg.toFixed(1)}°</tspan>
+                            </text>
+                          </g>
+                        )}
+                      </g>
+                    )
+                  })}
                 </g>
                 <text
                   data-track-item={item.id}
@@ -1706,9 +1989,8 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
             const rotationDeg = isDragging && dragPreview ? dragPreview.rotationDeg : shape.rotationDeg
             const strokeColor = isSelected ? SELECTED_SHAPE_STROKE_COLOR : SHAPE_STROKE_COLOR
             const strokeWidth = isSelected ? SHAPE_STROKE_WIDTH + 1 : SHAPE_STROKE_WIDTH
-            const shapeType = normalizeShapeType(shape)
 
-            if (shapeType === 'circle') {
+            if (shape.type === 'circle') {
               const radius = shape.width / 2
               return (
                 <circle
@@ -1724,7 +2006,7 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                   style={{ cursor: 'pointer' }}
                 />
               )
-            } else if (shapeType === 'rectangle') {
+            } else if (shape.type === 'rectangle') {
               const width = shape.width
               const height = shape.height ?? shape.width
               const halfWidth = width / 2
@@ -1744,7 +2026,94 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                   style={{ cursor: 'pointer' }}
                 />
               )
-            } else if (shapeType === 'text') {
+            } else if (shape.type === 'dimension') {
+              const dimensionShape = shape as CanvasDimensionShape
+              const geometry = getDimensionGeometry({ ...dimensionShape, x, y, rotationDeg })
+              const tickHalf = DIMENSION_TICK_LENGTH_MM / 2
+              const tickDir = geometry.normal
+              const label = formatDimensionLabel(dimensionShape)
+              const fontSize = 8
+              const labelPos = {
+                x: (geometry.offsetStart.x + geometry.offsetEnd.x) / 2,
+                y: (geometry.offsetStart.y + geometry.offsetEnd.y) / 2,
+              }
+              const textRotation = rotationDeg > 90 && rotationDeg < 270 ? rotationDeg - 180 : rotationDeg
+              const labelBgWidth = estimateTextWidth(label, fontSize) + DIMENSION_TEXT_PADDING_MM * 2
+              const labelBgHeight = fontSize + DIMENSION_TEXT_PADDING_MM * 2
+
+              return (
+                <g key={shape.id} data-shape={shape.id} style={{ cursor: 'pointer' }}>
+                  <line
+                    x1={geometry.start.x}
+                    y1={geometry.start.y}
+                    x2={geometry.offsetStart.x}
+                    y2={geometry.offsetStart.y}
+                    stroke={strokeColor}
+                    strokeWidth={strokeWidth}
+                    strokeLinecap="round"
+                    opacity={0.8}
+                  />
+                  <line
+                    x1={geometry.end.x}
+                    y1={geometry.end.y}
+                    x2={geometry.offsetEnd.x}
+                    y2={geometry.offsetEnd.y}
+                    stroke={strokeColor}
+                    strokeWidth={strokeWidth}
+                    strokeLinecap="round"
+                    opacity={0.8}
+                  />
+                  <line
+                    x1={geometry.offsetStart.x}
+                    y1={geometry.offsetStart.y}
+                    x2={geometry.offsetEnd.x}
+                    y2={geometry.offsetEnd.y}
+                    stroke={strokeColor}
+                    strokeWidth={strokeWidth}
+                    strokeLinecap="round"
+                  />
+                  <line
+                    x1={geometry.offsetStart.x - tickDir.x * tickHalf}
+                    y1={geometry.offsetStart.y - tickDir.y * tickHalf}
+                    x2={geometry.offsetStart.x + tickDir.x * tickHalf}
+                    y2={geometry.offsetStart.y + tickDir.y * tickHalf}
+                    stroke={strokeColor}
+                    strokeWidth={strokeWidth}
+                    strokeLinecap="round"
+                  />
+                  <line
+                    x1={geometry.offsetEnd.x - tickDir.x * tickHalf}
+                    y1={geometry.offsetEnd.y - tickDir.y * tickHalf}
+                    x2={geometry.offsetEnd.x + tickDir.x * tickHalf}
+                    y2={geometry.offsetEnd.y + tickDir.y * tickHalf}
+                    stroke={strokeColor}
+                    strokeWidth={strokeWidth}
+                    strokeLinecap="round"
+                  />
+                  <g transform={`translate(${labelPos.x} ${labelPos.y}) rotate(${textRotation})`}>
+                    <rect
+                      x={-labelBgWidth / 2}
+                      y={-labelBgHeight / 2}
+                      width={labelBgWidth}
+                      height={labelBgHeight}
+                      fill="rgba(15, 23, 42, 0.85)"
+                      stroke={strokeColor}
+                      strokeWidth={1}
+                      rx={2}
+                    />
+                    <text
+                      x={0}
+                      y={fontSize / 3}
+                      textAnchor="middle"
+                      fontSize={fontSize}
+                      className="fill-slate-100"
+                    >
+                      {label}
+                    </text>
+                  </g>
+                </g>
+              )
+            } else if (shape.type === 'text') {
               const textShape = shape as CanvasTextShape
               const textWidth = estimateTextWidth(textShape.text, textShape.fontSize)
               const textHeight = textShape.fontSize
@@ -1827,6 +2196,118 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
             const dy = drawCurrent.y - drawStart.y
             const centerX = (drawStart.x + drawCurrent.x) / 2
             const centerY = (drawStart.y + drawCurrent.y) / 2
+
+            if (drawingTool === 'dimension') {
+              let dimensionDx = dx
+              let dimensionDy = dy
+              if (drawShiftActive) {
+                if (Math.abs(dimensionDx) > Math.abs(dimensionDy)) {
+                  dimensionDy = 0
+                } else {
+                  dimensionDx = 0
+                }
+              }
+              const length = Math.hypot(dimensionDx, dimensionDy)
+              if (length < DIMENSION_MIN_LENGTH_MM) return null
+
+              const tempShape: CanvasDimensionShape = {
+                id: 'preview-dimension',
+                type: 'dimension',
+                x: drawStart.x + dimensionDx / 2,
+                y: drawStart.y + dimensionDy / 2,
+                length,
+                rotationDeg: normalizeAngle((Math.atan2(dimensionDy, dimensionDx) * 180) / Math.PI),
+                offsetMm: DIMENSION_OFFSET_MM,
+              }
+              const geometry = getDimensionGeometry(tempShape)
+              const tickHalf = DIMENSION_TICK_LENGTH_MM / 2
+              const tickDir = geometry.normal
+              const label = formatDimensionLabel(tempShape)
+              const fontSize = 8
+              const labelPos = {
+                x: (geometry.offsetStart.x + geometry.offsetEnd.x) / 2,
+                y: (geometry.offsetStart.y + geometry.offsetEnd.y) / 2,
+              }
+              const textRotation = tempShape.rotationDeg > 90 && tempShape.rotationDeg < 270 ? tempShape.rotationDeg - 180 : tempShape.rotationDeg
+              const labelBgWidth = estimateTextWidth(label, fontSize) + DIMENSION_TEXT_PADDING_MM * 2
+              const labelBgHeight = fontSize + DIMENSION_TEXT_PADDING_MM * 2
+
+              return (
+                <g pointerEvents="none" opacity={0.8}>
+                  <line
+                    x1={geometry.start.x}
+                    y1={geometry.start.y}
+                    x2={geometry.offsetStart.x}
+                    y2={geometry.offsetStart.y}
+                    stroke={SHAPE_STROKE_COLOR}
+                    strokeWidth={SHAPE_STROKE_WIDTH}
+                    strokeLinecap="round"
+                    strokeDasharray="4 4"
+                  />
+                  <line
+                    x1={geometry.end.x}
+                    y1={geometry.end.y}
+                    x2={geometry.offsetEnd.x}
+                    y2={geometry.offsetEnd.y}
+                    stroke={SHAPE_STROKE_COLOR}
+                    strokeWidth={SHAPE_STROKE_WIDTH}
+                    strokeLinecap="round"
+                    strokeDasharray="4 4"
+                  />
+                  <line
+                    x1={geometry.offsetStart.x}
+                    y1={geometry.offsetStart.y}
+                    x2={geometry.offsetEnd.x}
+                    y2={geometry.offsetEnd.y}
+                    stroke={SHAPE_STROKE_COLOR}
+                    strokeWidth={SHAPE_STROKE_WIDTH}
+                    strokeLinecap="round"
+                    strokeDasharray="4 2"
+                  />
+                  <line
+                    x1={geometry.offsetStart.x - tickDir.x * tickHalf}
+                    y1={geometry.offsetStart.y - tickDir.y * tickHalf}
+                    x2={geometry.offsetStart.x + tickDir.x * tickHalf}
+                    y2={geometry.offsetStart.y + tickDir.y * tickHalf}
+                    stroke={SHAPE_STROKE_COLOR}
+                    strokeWidth={SHAPE_STROKE_WIDTH}
+                    strokeLinecap="round"
+                    strokeDasharray="4 2"
+                  />
+                  <line
+                    x1={geometry.offsetEnd.x - tickDir.x * tickHalf}
+                    y1={geometry.offsetEnd.y - tickDir.y * tickHalf}
+                    x2={geometry.offsetEnd.x + tickDir.x * tickHalf}
+                    y2={geometry.offsetEnd.y + tickDir.y * tickHalf}
+                    stroke={SHAPE_STROKE_COLOR}
+                    strokeWidth={SHAPE_STROKE_WIDTH}
+                    strokeLinecap="round"
+                    strokeDasharray="4 2"
+                  />
+                  <g transform={`translate(${labelPos.x} ${labelPos.y}) rotate(${textRotation})`}>
+                    <rect
+                      x={-labelBgWidth / 2}
+                      y={-labelBgHeight / 2}
+                      width={labelBgWidth}
+                      height={labelBgHeight}
+                      fill="rgba(15, 23, 42, 0.65)"
+                      stroke={SHAPE_STROKE_COLOR}
+                      strokeWidth={1}
+                      rx={2}
+                    />
+                    <text
+                      x={0}
+                      y={fontSize / 3}
+                      textAnchor="middle"
+                      fontSize={fontSize}
+                      className="fill-slate-100"
+                    >
+                      {label}
+                    </text>
+                  </g>
+                </g>
+              )
+            }
 
             if (drawingTool === 'circle') {
               const radius = Math.hypot(dx, dy) / 2

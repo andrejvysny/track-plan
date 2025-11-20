@@ -28,7 +28,7 @@ export interface EndpointConnection {
   endpoints: [EndpointRef, EndpointRef]
 }
 
-export type ShapeType = 'rectangle' | 'circle' | 'text'
+export type ShapeType = 'rectangle' | 'circle' | 'text' | 'dimension'
 
 export type CanvasPrimitiveShape = {
   /** Unique instance identifier (e.g. uuid) */
@@ -63,6 +63,22 @@ export type CanvasTextShape = {
   rotationDeg: number
 }
 
-export type CanvasShape = CanvasPrimitiveShape | CanvasTextShape
+export type CanvasDimensionShape = {
+  id: string
+  type: 'dimension'
+  /** Center of the measured span */
+  x: number
+  y: number
+  /** Length of the measured span in mm */
+  length: number
+  /** Dimension line rotation (aligned with the measured span) */
+  rotationDeg: number
+  /** Perpendicular offset of the dimension line from the measured points */
+  offsetMm: number
+  /** Optional custom label; when absent, the length is shown */
+  label?: string
+}
+
+export type CanvasShape = CanvasPrimitiveShape | CanvasTextShape | CanvasDimensionShape
 
 /** LayoutState is intentionally generic right now; future phases will extend it with connectors, grid settings, etc. */

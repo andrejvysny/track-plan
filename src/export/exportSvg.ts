@@ -1,17 +1,30 @@
-import type { CanvasShape, CanvasTextShape, LayoutState } from '../types/layout'
+import type {
+  CanvasDimensionShape,
+  CanvasPrimitiveShape,
+  CanvasShape,
+  CanvasTextShape,
+  LayoutState,
+} from '../types/layout'
 import type {
   TrackComponentDefinition,
   TrackConnector,
   TrackSystemDefinition,
 } from '../types/trackSystem'
 import { getComponentGeometry, rotatePointLocal } from '../geometry/trackGeometry'
-import { TEXT_DEFAULT_HEIGHT_MM, TEXT_DEFAULT_WIDTH_MM } from '../constants/layout'
+import {
+  TEXT_CHAR_WIDTH_FACTOR,
+  TEXT_DEFAULT_HEIGHT_MM,
+  TEXT_DEFAULT_WIDTH_MM,
+} from '../constants/layout'
 
 const TRACK_STROKE_WIDTH_MM = 28
 const EXPORT_BLACK = '#000'
 const ENDPOINT_CIRCLE_RADIUS = 8
 const LABEL_OFFSET_MM = 18
 const SHAPE_STROKE_WIDTH = 2
+const DIMENSION_TICK_LENGTH_MM = 8
+const DIMENSION_TEXT_PADDING_MM = 2
+const DIMENSION_FONT_SIZE = 8
 
 type Bounds = {
   minX: number
@@ -121,11 +134,78 @@ const escapeXml = (value: string) =>
 
 const trackBoundsPadding = TRACK_STROKE_WIDTH_MM / 2 + ENDPOINT_CIRCLE_RADIUS
 
+const estimateTextWidth = (text: string, fontSize: number) => {
+  const length = Math.max(text.length, 1)
+  return length * fontSize * TEXT_CHAR_WIDTH_FACTOR
+}
+
+const getDimensionGeometry = (shape: CanvasDimensionShape) => {
+  const angleRad = (shape.rotationDeg / 180) * Math.PI
+  const dir = { x: Math.cos(angleRad), y: Math.sin(angleRad) }
+  const normal = { x: -dir.y, y: dir.x }
+  const half = shape.length / 2
+  const start = { x: shape.x - dir.x * half, y: shape.y - dir.y * half }
+  const end = { x: shape.x + dir.x * half, y: shape.y + dir.y * half }
+  const offsetStart = { x: start.x + normal.x * shape.offsetMm, y: start.y + normal.y * shape.offsetMm }
+  const offsetEnd = { x: end.x + normal.x * shape.offsetMm, y: end.y + normal.y * shape.offsetMm }
+  return { start, end, offsetStart, offsetEnd, dir, normal }
+}
+
+const formatDimensionLabel = (shape: CanvasDimensionShape) => shape.label ?? `${shape.length.toFixed(1)} mm`
+
+const isDimensionShape = (shape: CanvasShape): shape is CanvasDimensionShape => shape.type === 'dimension'
+
 const getShapeBounds = (shape: CanvasShape): Bounds => {
-  const shapeType = shape.type
-  const halfWidth = shape.width / 2
-  if (shapeType === 'circle') {
-    const radius = halfWidth
+  if (isDimensionShape(shape)) {
+    const geometry = getDimensionGeometry(shape)
+    const tickHalf = DIMENSION_TICK_LENGTH_MM / 2
+    const tickDir = geometry.normal
+    const label = formatDimensionLabel(shape)
+    const labelBgWidth = estimateTextWidth(label, DIMENSION_FONT_SIZE) + DIMENSION_TEXT_PADDING_MM * 2
+    const labelBgHeight = DIMENSION_FONT_SIZE + DIMENSION_TEXT_PADDING_MM * 2
+    const labelCenter = {
+      x: (geometry.offsetStart.x + geometry.offsetEnd.x) / 2,
+      y: (geometry.offsetStart.y + geometry.offsetEnd.y) / 2,
+    }
+    const textRotation = shape.rotationDeg > 90 && shape.rotationDeg < 270 ? shape.rotationDeg - 180 : shape.rotationDeg
+    const labelCorners = [
+      { x: -labelBgWidth / 2, y: -labelBgHeight / 2 },
+      { x: labelBgWidth / 2, y: -labelBgHeight / 2 },
+      { x: labelBgWidth / 2, y: labelBgHeight / 2 },
+      { x: -labelBgWidth / 2, y: labelBgHeight / 2 },
+    ].map((corner) => rotatePointLocal(corner.x, corner.y, textRotation))
+
+    const points = [
+      geometry.start,
+      geometry.end,
+      geometry.offsetStart,
+      geometry.offsetEnd,
+      { x: geometry.offsetStart.x + tickDir.x * tickHalf, y: geometry.offsetStart.y + tickDir.y * tickHalf },
+      { x: geometry.offsetStart.x - tickDir.x * tickHalf, y: geometry.offsetStart.y - tickDir.y * tickHalf },
+      { x: geometry.offsetEnd.x + tickDir.x * tickHalf, y: geometry.offsetEnd.y + tickDir.y * tickHalf },
+      { x: geometry.offsetEnd.x - tickDir.x * tickHalf, y: geometry.offsetEnd.y - tickDir.y * tickHalf },
+      ...labelCorners.map((corner) => ({ x: corner.x + labelCenter.x, y: corner.y + labelCenter.y })),
+    ]
+
+    const bounds = points.reduce(
+      (acc, point) => ({
+        minX: Math.min(acc.minX, point.x),
+        maxX: Math.max(acc.maxX, point.x),
+        minY: Math.min(acc.minY, point.y),
+        maxY: Math.max(acc.maxY, point.y),
+      }),
+      {
+        minX: Number.POSITIVE_INFINITY,
+        maxX: Number.NEGATIVE_INFINITY,
+        minY: Number.POSITIVE_INFINITY,
+        maxY: Number.NEGATIVE_INFINITY,
+      },
+    )
+    return expandBounds(bounds, SHAPE_STROKE_WIDTH / 2)
+  }
+
+  if (shape.type === 'circle') {
+    const radius = shape.width / 2
     const bounds: Bounds = {
       minX: shape.x - radius,
       maxX: shape.x + radius,
@@ -135,7 +215,7 @@ const getShapeBounds = (shape: CanvasShape): Bounds => {
     return expandBounds(bounds, SHAPE_STROKE_WIDTH / 2)
   }
 
-  if (shapeType === 'text') {
+  if (shape.type === 'text') {
     const textShape = shape as CanvasTextShape
     const textWidth = textShape.width ?? TEXT_DEFAULT_WIDTH_MM
     const textHeight = textShape.height ?? TEXT_DEFAULT_HEIGHT_MM
@@ -166,8 +246,10 @@ const getShapeBounds = (shape: CanvasShape): Bounds => {
     return expandBounds(bounds, SHAPE_STROKE_WIDTH / 2)
   }
 
-  const height = shape.height ?? shape.width
+  const primitive = shape as CanvasPrimitiveShape
+  const height = primitive.height ?? primitive.width
   const halfHeight = height / 2
+  const halfWidth = primitive.width / 2
   const corners = [
     { x: -halfWidth, y: -halfHeight },
     { x: halfWidth, y: -halfHeight },
@@ -175,8 +257,8 @@ const getShapeBounds = (shape: CanvasShape): Bounds => {
     { x: -halfWidth, y: halfHeight },
   ]
 
-  const rotated = corners.map((corner) => rotatePointLocal(corner.x, corner.y, shape.rotationDeg))
-  const world = rotated.map((point) => ({ x: point.x + shape.x, y: point.y + shape.y }))
+  const rotated = corners.map((corner) => rotatePointLocal(corner.x, corner.y, primitive.rotationDeg))
+  const world = rotated.map((point) => ({ x: point.x + primitive.x, y: point.y + primitive.y }))
   const bounds = world.reduce(
     (acc, point) => ({
       minX: Math.min(acc.minX, point.x),
@@ -198,6 +280,38 @@ const buildShapeElement = (shape: CanvasShape) => {
   const rotationTransform = `rotate(${shape.rotationDeg} ${shape.x} ${shape.y})`
   const shapeType = shape.type
 
+  if (shapeType === 'dimension') {
+    const dimensionShape = shape as CanvasDimensionShape
+    const geometry = getDimensionGeometry(dimensionShape)
+    const tickHalf = DIMENSION_TICK_LENGTH_MM / 2
+    const tickDir = geometry.normal
+    const label = formatDimensionLabel(dimensionShape)
+    const labelPos = {
+      x: (geometry.offsetStart.x + geometry.offsetEnd.x) / 2,
+      y: (geometry.offsetStart.y + geometry.offsetEnd.y) / 2,
+    }
+    const textRotation =
+      dimensionShape.rotationDeg > 90 && dimensionShape.rotationDeg < 270
+        ? dimensionShape.rotationDeg - 180
+        : dimensionShape.rotationDeg
+    const labelBgWidth =
+      estimateTextWidth(label, DIMENSION_FONT_SIZE) + DIMENSION_TEXT_PADDING_MM * 2
+    const labelBgHeight = DIMENSION_FONT_SIZE + DIMENSION_TEXT_PADDING_MM * 2
+
+    return `
+      <g>
+        <line x1="${geometry.start.x}" y1="${geometry.start.y}" x2="${geometry.offsetStart.x}" y2="${geometry.offsetStart.y}" stroke="${EXPORT_BLACK}" stroke-width="${SHAPE_STROKE_WIDTH}" stroke-linecap="round" />
+        <line x1="${geometry.end.x}" y1="${geometry.end.y}" x2="${geometry.offsetEnd.x}" y2="${geometry.offsetEnd.y}" stroke="${EXPORT_BLACK}" stroke-width="${SHAPE_STROKE_WIDTH}" stroke-linecap="round" />
+        <line x1="${geometry.offsetStart.x}" y1="${geometry.offsetStart.y}" x2="${geometry.offsetEnd.x}" y2="${geometry.offsetEnd.y}" stroke="${EXPORT_BLACK}" stroke-width="${SHAPE_STROKE_WIDTH}" stroke-linecap="round" />
+        <line x1="${geometry.offsetStart.x - tickDir.x * tickHalf}" y1="${geometry.offsetStart.y - tickDir.y * tickHalf}" x2="${geometry.offsetStart.x + tickDir.x * tickHalf}" y2="${geometry.offsetStart.y + tickDir.y * tickHalf}" stroke="${EXPORT_BLACK}" stroke-width="${SHAPE_STROKE_WIDTH}" stroke-linecap="round" />
+        <line x1="${geometry.offsetEnd.x - tickDir.x * tickHalf}" y1="${geometry.offsetEnd.y - tickDir.y * tickHalf}" x2="${geometry.offsetEnd.x + tickDir.x * tickHalf}" y2="${geometry.offsetEnd.y + tickDir.y * tickHalf}" stroke="${EXPORT_BLACK}" stroke-width="${SHAPE_STROKE_WIDTH}" stroke-linecap="round" />
+        <g transform="translate(${labelPos.x} ${labelPos.y}) rotate(${textRotation})">
+          <rect x="${-labelBgWidth / 2}" y="${-labelBgHeight / 2}" width="${labelBgWidth}" height="${labelBgHeight}" fill="${EXPORT_BLACK}" stroke="${EXPORT_BLACK}" stroke-width="1" rx="2" />
+          <text x="0" y="${DIMENSION_FONT_SIZE / 3}" text-anchor="middle" font-size="${DIMENSION_FONT_SIZE}" fill="white">${escapeXml(label)}</text>
+        </g>
+      </g>\n`
+  }
+
   if (shapeType === 'circle') {
     const radius = shape.width / 2
     return `<circle cx="${shape.x}" cy="${shape.y}" r="${radius}" fill="none" stroke="${EXPORT_BLACK}" stroke-width="${SHAPE_STROKE_WIDTH}" transform="${rotationTransform}"/>`
@@ -209,11 +323,12 @@ const buildShapeElement = (shape: CanvasShape) => {
   }
 
   // Rectangle (includes legacy squares)
-  const height = shape.height ?? shape.width
+  const primitive = shape as CanvasPrimitiveShape
+  const height = primitive.height ?? primitive.width
   const halfHeight = height / 2
-  const x = shape.x - shape.width / 2
-  const y = shape.y - halfHeight
-  return `<rect x="${x}" y="${y}" width="${shape.width}" height="${height}" fill="none" stroke="${EXPORT_BLACK}" stroke-width="${SHAPE_STROKE_WIDTH}" transform="${rotationTransform}"/>`
+  const x = primitive.x - primitive.width / 2
+  const y = primitive.y - halfHeight
+  return `<rect x="${x}" y="${y}" width="${primitive.width}" height="${height}" fill="none" stroke="${EXPORT_BLACK}" stroke-width="${SHAPE_STROKE_WIDTH}" transform="${rotationTransform}"/>`
 }
 
 export function buildLayoutSvgString(
