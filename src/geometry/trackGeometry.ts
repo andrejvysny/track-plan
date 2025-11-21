@@ -1,4 +1,10 @@
-import type { ComponentGeometry, TrackComponentDefinition, TrackConnector, WorldTransform } from '../types/trackSystem'
+import type {
+  ComponentGeometry,
+  CrossingMeta,
+  TrackComponentDefinition,
+  TrackConnector,
+  WorldTransform,
+} from '../types/trackSystem'
 import { normalizeVec, toDeg, toRad, TRACK_EDGE_WIDTH_MM } from './geometryUtils'
 
 const warnMissing = (id: string) => {
@@ -107,6 +113,11 @@ const isSimpleSwitchMeta = (meta: unknown): meta is SimpleSwitchMeta => {
   )
 }
 
+const isCrossingMeta = (meta: unknown): meta is CrossingMeta => {
+  if (!isRecord(meta)) return false
+  return hasNumber(meta.lengthMm) && hasNumber(meta.crossingAngleDeg)
+}
+
 export function getComponentGeometry(def: TrackComponentDefinition): ComponentGeometry {
   switch (def.type) {
     case 'straight':
@@ -131,6 +142,13 @@ export function getComponentGeometry(def: TrackComponentDefinition): ComponentGe
         return getDoubleSlipGeometry(meta)
       }
       return getSimpleSwitchGeometry(def)
+    }
+    case 'crossing': {
+      const meta = def.meta as CrossingMeta | undefined
+      if (isCrossingMeta(meta)) {
+        return getCrossingGeometry(meta)
+      }
+      return getStraightGeometry(def)
     }
     default:
       warnMissing(def.id)
@@ -283,13 +301,13 @@ function getThreeWaySwitchGeometry(meta: ThreeWaySwitchMeta): ComponentGeometry 
   const buildBranch = (sign: 1 | -1): TrackConnector => {
     const xMm = branchOffsetMm + branchRadiusMm * Math.sin(theta)
     const yMm = sign * (branchRadiusMm - branchRadiusMm * Math.cos(theta))
-    // Endpoint vector is horizontal (0°) pointing outside (right) for consistent visualization
-    const directionDeg = 0
+    // Direction should reflect branch angle: left branch negative, right branch positive
+    const directionDeg = sign * branchAngleDeg
     return makeConnector(xMm, yMm, directionDeg)
   }
 
-  const leftBranch = buildBranch(1)
-  const rightBranch = buildBranch(-1)
+  const leftBranch = buildBranch(-1)
+  const rightBranch = buildBranch(1)
 
   const buildPathD = () => {
     const largeArcFlag = 0
@@ -349,49 +367,22 @@ function getYSwitchGeometry(meta: YSwitchMeta): ComponentGeometry {
 }
 
 function getDoubleSlipGeometry(meta: DoubleSlipMeta): ComponentGeometry {
-  const { lengthMm, crossingAngleDeg, slipRadiusMm } = meta
+  const { lengthMm, crossingAngleDeg } = meta
   const half = lengthMm / 2
-  const centerX = half
   const start = makeConnector(0, 0, 180)
   const end = makeConnector(lengthMm, 0, 0)
 
-  const verticalHalf = half
-  const top = makeConnector(centerX, verticalHalf, 90)
-  const bottom = makeConnector(centerX, -verticalHalf, -90)
-
   const angleRad = toRad(crossingAngleDeg)
-  const diagXOffset = half * Math.cos(angleRad)
-  const diagYOffset = half * Math.sin(angleRad)
+  const dx = half * Math.cos(angleRad)
+  const dy = half * Math.sin(angleRad)
 
-  const diagPositive = { xMm: centerX + diagXOffset, yMm: diagYOffset }
-  const diagNegative = { xMm: centerX - diagXOffset, yMm: -diagYOffset }
-
-  const buildSlipArc = (
-    from: { xMm: number; yMm: number },
-    to: { xMm: number; yMm: number },
-    sweepFlag: 0 | 1,
-  ) => `M ${from.xMm} ${from.yMm} A ${slipRadiusMm} ${slipRadiusMm} 0 0 ${sweepFlag} ${to.xMm} ${to.yMm}`
+  const crossStart = makeConnector(half - dx, -dy, 180 + crossingAngleDeg)
+  const crossEnd = makeConnector(half + dx, dy, crossingAngleDeg)
 
   const buildPathD = () => {
-    const horizontal = `M 0 0 L ${lengthMm} 0`
-    const diagonal = `M ${diagNegative.xMm} ${diagNegative.yMm} L ${diagPositive.xMm} ${diagPositive.yMm}`
-    const mirroredDiagonal = `M ${diagNegative.xMm} ${-diagNegative.yMm} L ${diagPositive.xMm} ${-diagPositive.yMm}`
-    const vertical = `M ${centerX} ${-verticalHalf} L ${centerX} ${verticalHalf}`
-
-    const leftToTop = buildSlipArc({ xMm: 0, yMm: 0 }, top, 0)
-    const leftToBottom = buildSlipArc({ xMm: 0, yMm: 0 }, bottom, 1)
-    const rightToTop = buildSlipArc({ xMm: lengthMm, yMm: 0 }, top, 1)
-    const rightToBottom = buildSlipArc({ xMm: lengthMm, yMm: 0 }, bottom, 0)
-
     return [
-      horizontal,
-      vertical,
-      diagonal,
-      mirroredDiagonal,
-      leftToTop,
-      leftToBottom,
-      rightToTop,
-      rightToBottom,
+      `M 0 0 L ${lengthMm} 0`,
+      `M ${crossStart.xMm} ${crossStart.yMm} L ${crossEnd.xMm} ${crossEnd.yMm}`,
     ].join(' ')
   }
 
@@ -400,8 +391,51 @@ function getDoubleSlipGeometry(meta: DoubleSlipMeta): ComponentGeometry {
     end,
     buildPathD,
     extraConnectors: {
-      endB1: top,
-      endB2: bottom,
+      crossStart,
+      crossEnd,
+    },
+  }
+}
+
+function getCrossingGeometry(meta: CrossingMeta): ComponentGeometry {
+  const { lengthMm, crossingAngleDeg } = meta
+  const half = lengthMm / 2
+  const start = makeConnector(0, 0, 180)
+  const end = makeConnector(lengthMm, 0, 0)
+
+  const angleRad = toRad(crossingAngleDeg)
+  // The crossing track is rotated by crossingAngleDeg relative to the main track
+  // It is also centered at (half, 0)
+  // We want to find the start and end points of this crossing track.
+  // Let's assume the crossing track has the same length as the main track for simplicity/symmetry,
+  // or we calculate it based on the geometry.
+  // For K15/K30, the crossing is symmetric.
+
+  const dx = half * Math.cos(angleRad)
+  const dy = half * Math.sin(angleRad)
+
+  // Crossing track goes from (half - dx, -dy) to (half + dx, dy)
+  // But wait, the angle is relative to the main track.
+  // If angle is 15 deg, it goes "up" if we consider positive angle.
+  // Let's define it such that it crosses from bottom-left to top-right if angle > 0.
+
+  const crossStart = makeConnector(half - dx, -dy, 180 + crossingAngleDeg)
+  const crossEnd = makeConnector(half + dx, dy, crossingAngleDeg)
+
+  const buildPathD = () => {
+    return [
+      `M 0 0 L ${lengthMm} 0`,
+      `M ${crossStart.xMm} ${crossStart.yMm} L ${crossEnd.xMm} ${crossEnd.yMm}`,
+    ].join(' ')
+  }
+
+  return {
+    start,
+    end,
+    buildPathD,
+    extraConnectors: {
+      crossStart,
+      crossEnd,
     },
   }
 }

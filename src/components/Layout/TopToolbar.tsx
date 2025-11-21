@@ -29,6 +29,8 @@ interface TopToolbarProps {
   isSelectionGrounded: boolean
   canExportProject: boolean
   debugMode: boolean
+  showColors: boolean
+  onToggleColors: () => void
   drawingTool: ShapeType | null
   onDrawingToolChange: (tool: ShapeType | null) => void
   onDimensionAction?: (type: 'center' | 'inner' | 'outer') => boolean
@@ -61,6 +63,8 @@ export function TopToolbar({
   isSelectionGrounded,
   canExportProject,
   debugMode,
+  showColors,
+  onToggleColors,
   drawingTool,
   onDrawingToolChange,
   onDimensionAction,
@@ -232,6 +236,13 @@ export function TopToolbar({
             className={`${baseControlStyles} ${debugButton} ${debugMode ? 'border-purple-400 bg-purple-500/30' : ''}`}
           >
             DEBUG
+          </button>
+          <button
+            type="button"
+            onClick={onToggleColors}
+            className={`${baseControlStyles} ${debugButton} ${showColors ? 'border-purple-400 bg-purple-500/30' : ''}`}
+          >
+            COLORS
           </button>
           <button
             type="button"

@@ -15,6 +15,7 @@ export const pikoA_H0: TrackSystemDefinition = {
       label: 'G239 Straight 239 mm',
       type: 'straight',
       article: '55200',
+      color: '#F5B041',
       lengthMm: 239,
     },
     {
@@ -22,6 +23,7 @@ export const pikoA_H0: TrackSystemDefinition = {
       label: 'G231 Straight 231 mm',
       type: 'straight',
       article: '55201',
+      color: '#E67E22',
       lengthMm: 230.93,
     },
     {
@@ -29,6 +31,7 @@ export const pikoA_H0: TrackSystemDefinition = {
       label: 'G119 Straight 119.5 mm',
       type: 'straight',
       article: '55202',
+      color: '#C0392B',
       lengthMm: 119.54,
     },
     {
@@ -36,6 +39,7 @@ export const pikoA_H0: TrackSystemDefinition = {
       label: 'G115 Straight 115.5 mm',
       type: 'straight',
       article: '55203',
+      color: '#D81B60',
       lengthMm: 115.46,
     },
     {
@@ -43,6 +47,7 @@ export const pikoA_H0: TrackSystemDefinition = {
       label: 'G107 Straight 107.3 mm',
       type: 'straight',
       article: '55204',
+      color: '#8E44AD',
       lengthMm: 107.32,
     },
     {
@@ -50,6 +55,7 @@ export const pikoA_H0: TrackSystemDefinition = {
       label: 'G62 Straight 61.9 mm',
       type: 'straight',
       article: '55205',
+      color: '#512E5F',
       lengthMm: 61.88,
     },
     {
@@ -57,6 +63,7 @@ export const pikoA_H0: TrackSystemDefinition = {
       label: 'R1 Curve 30° r=360 mm',
       type: 'curve',
       article: '55211',
+      color: '#AED6F1',
       radiusMm: 360.0,
       angleDeg: 30,
       clockwise: false,
@@ -66,6 +73,7 @@ export const pikoA_H0: TrackSystemDefinition = {
       label: 'R2 Curve 30° r=421.9 mm',
       type: 'curve',
       article: '55212',
+      color: '#3498DB',
       radiusMm: 421.9,
       angleDeg: 30,
       clockwise: false,
@@ -75,6 +83,7 @@ export const pikoA_H0: TrackSystemDefinition = {
       label: 'R3 Curve 30° r=483.8 mm',
       type: 'curve',
       article: '55213',
+      color: '#2874A6',
       radiusMm: 483.8,
       angleDeg: 30,
       clockwise: false,
@@ -84,6 +93,7 @@ export const pikoA_H0: TrackSystemDefinition = {
       label: 'R4 Curve 30° r=545.6 mm',
       type: 'curve',
       article: '55214',
+      color: '#1B4F72',
       radiusMm: 545.6,
       angleDeg: 30,
       clockwise: false,
@@ -93,6 +103,7 @@ export const pikoA_H0: TrackSystemDefinition = {
       label: 'R9 Curve 15° r=907.97 mm',
       type: 'curve',
       article: '55219',
+      color: '#154360',
       radiusMm: 907.97,
       angleDeg: 15,
       clockwise: false,
@@ -102,6 +113,7 @@ export const pikoA_H0: TrackSystemDefinition = {
       label: 'WR Right Switch 15° R9',
       type: 'switch',
       article: '55220',
+      color: '#52BE80',
       lengthMm: 239,
       meta: {
         variant: 'simple-switch',
@@ -116,6 +128,7 @@ export const pikoA_H0: TrackSystemDefinition = {
       label: 'WL Left Switch 15° R9',
       type: 'switch',
       article: '55221',
+      color: '#52BE80',
       lengthMm: 239,
       meta: {
         variant: 'simple-switch',
@@ -123,6 +136,59 @@ export const pikoA_H0: TrackSystemDefinition = {
         straightLengthMm: 239,
         branchRadiusMm: 907.97,
         branchAngleDeg: 15,
+      },
+    },
+    {
+      id: 'W3',
+      label: 'W3 3-Way Switch',
+      type: 'switch',
+      article: '55224',
+      color: '#117864',
+      lengthMm: 239,
+      meta: {
+        variant: 'three-way',
+        straightLengthMm: 239,
+        branchRadiusMm: 907.97,
+        branchAngleDeg: 15,
+        branchOffsetMm: 0,
+      },
+    },
+    {
+      id: 'DKW',
+      label: 'DKW Double Slip Switch',
+      type: 'switch',
+      article: '55224', // Note: Article number might be different, using placeholder or checking if available. DKW is usually 55224.
+      color: '#F4D03F',
+      lengthMm: 239,
+      meta: {
+        variant: 'double-slip',
+        lengthMm: 239,
+        crossingAngleDeg: 15,
+        slipRadiusMm: 907.97, // Assuming R9 for slip
+      },
+    },
+    {
+      id: 'K15',
+      label: 'K15 Crossing 15°',
+      type: 'crossing',
+      article: '55240',
+      color: '#FFF9C4',
+      lengthMm: 239,
+      meta: {
+        lengthMm: 239,
+        crossingAngleDeg: 15,
+      },
+    },
+    {
+      id: 'K30',
+      label: 'K30 Crossing 30°',
+      type: 'crossing',
+      article: '55241',
+      color: '#FFF176',
+      lengthMm: 119.54,
+      meta: {
+        lengthMm: 119.54,
+        crossingAngleDeg: 30,
       },
     },
   ],

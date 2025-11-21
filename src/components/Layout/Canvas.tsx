@@ -52,6 +52,7 @@ type CanvasProps = {
   onSelectionChange?: (itemIds: string[]) => void
   onSelectedEndpointsChange?: (endpoints: EndpointRef[]) => void
   debugMode?: boolean
+  showColors?: boolean
   drawingTool?: ShapeType | null
   undo: () => void
   redo: () => void
@@ -103,6 +104,8 @@ const ENDPOINT_CIRCLE_RADIUS = 8
 const ENDPOINT_VECTOR_LENGTH_MM = 24
 const TRACK_STROKE_WIDTH_MM = 28
 const TRACK_FILL_COLOR = '#1f2937'
+
+const getComponentFillColor = (component: TrackComponentDefinition) => component.color ?? TRACK_FILL_COLOR
 const TRACK_BORDER_COLOR = 'darkgrey'
 const SELECTED_TRACK_BORDER_COLOR = '#60a5fa'
 const SELECTED_ENDPOINT_COLOR = '#dc2626'
@@ -214,6 +217,7 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     onSelectionChange,
     onSelectedEndpointsChange,
     debugMode = false,
+    showColors = true,
     drawingTool = null,
     undo,
     redo,
@@ -1878,12 +1882,25 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                 >
                   <path
                     d={geometry.buildPathD()}
-                    fill={TRACK_FILL_COLOR}
-                    stroke={trackStrokeColor}
+                    fill="none"
+                    stroke={showColors ? getComponentFillColor(component) : TRACK_FILL_COLOR}
                     strokeWidth={TRACK_STROKE_WIDTH_MM}
                     strokeLinecap="butt"
                     strokeLinejoin="miter"
                   />
+                  {/* Selection/Grounded Highlight Overlay */}
+                  {(isSelected || isGrounded) && (
+                    <path
+                      d={geometry.buildPathD()}
+                      fill="none"
+                      stroke={trackStrokeColor}
+                      strokeWidth={TRACK_STROKE_WIDTH_MM}
+                      strokeLinecap="butt"
+                      strokeLinejoin="miter"
+                      opacity={0.5}
+                      pointerEvents="none"
+                    />
+                  )}
                   {connectorEntries.map(({ key, local }) => {
                     const isEndpointSelected = selectedEndpoints.some(
                       (endpoint) => endpoint.itemId === item.id && endpoint.connectorKey === key,

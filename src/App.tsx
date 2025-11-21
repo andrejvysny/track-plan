@@ -1,6 +1,7 @@
 import type { ChangeEventHandler } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { TrackComponentDefinition, TrackComponentType } from './types/trackSystem'
+import { pikoA_H0 } from './data/pikoA_H0'
 import { Canvas, type CanvasHandle } from './components/Layout/Canvas'
 import { ComponentsSidebar } from './components/Layout/ComponentsSidebar'
 import { ProjectsSidebar } from './components/Layout/ProjectsSidebar'
@@ -39,13 +40,17 @@ function App() {
   const [selectedItemIds, setSelectedItemIds] = useState<Set<string>>(new Set())
   const [selectedEndpoints, setSelectedEndpoints] = useState<EndpointRef[]>([])
   const [debugMode, setDebugMode] = useState(false)
+  const [showColors, setShowColors] = useState(true)
   const [drawingTool, setDrawingTool] = useState<ShapeType | null>(null)
 
-  const activeTrackSystem = useMemo(
-    () =>
-      activeLayout?.trackSystems.find((system) => system.id === activeLayout.activeTrackSystemId) ?? null,
-    [activeLayout],
-  )
+  const activeTrackSystem = useMemo(() => {
+    const system = activeLayout?.trackSystems.find((system) => system.id === activeLayout.activeTrackSystemId) ?? null
+    // Always use the fresh definition for Piko A H0 to ensure we have the latest metadata (colors, etc)
+    if (system?.id === pikoA_H0.id) {
+      return pikoA_H0
+    }
+    return system
+  }, [activeLayout])
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -333,6 +338,8 @@ function App() {
         onUndo={undo}
         onRedo={redo}
         onToggleDebug={() => setDebugMode((prev) => !prev)}
+        showColors={showColors}
+        onToggleColors={() => setShowColors((prev) => !prev)}
         canConnectEndpoints={canConnectEndpoints}
         canDisconnectEndpoints={canDisconnectEndpoints}
         canRotateSelection={canRotateSelection}
@@ -375,6 +382,7 @@ function App() {
             onSelectionChange={(ids) => setSelectedItemIds(new Set(ids))}
             onSelectedEndpointsChange={setSelectedEndpoints}
             debugMode={debugMode}
+            showColors={showColors}
             drawingTool={drawingTool}
             undo={undo}
             redo={redo}

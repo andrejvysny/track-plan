@@ -6,5 +6,6 @@ export const TRACK_COMPONENT_TYPE_LABELS: Record<TrackComponentType, string> = {
   straight: 'Straight',
   curve: 'Curve',
   switch: 'Switch',
+  crossing: 'Crossing',
   other: 'Other',
 }

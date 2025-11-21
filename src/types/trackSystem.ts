@@ -1,4 +1,4 @@
-export type TrackComponentType = 'straight' | 'curve' | 'switch' | 'other'
+export type TrackComponentType = 'straight' | 'curve' | 'switch' | 'crossing' | 'other'
 
 export interface Vec2 {
   x: number
@@ -14,7 +14,13 @@ export interface TrackComponentDefinition {
   angleDeg?: number
   clockwise?: boolean
   article?: string
+  color?: string
   meta?: Record<string, unknown>
+}
+
+export interface CrossingMeta {
+  lengthMm: number
+  crossingAngleDeg: number
 }
 
 export interface TrackSystemDefinition {
