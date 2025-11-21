@@ -604,8 +604,8 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       if (movingRef.itemId === targetRef.itemId) return false
 
       // Don't auto-connect if target item is in the same connected group as moving item
-      const movingGroup = getConnectedGroupIds(movingRef.itemId)
-      if (movingGroup.includes(targetRef.itemId)) {
+      const movingGroupIds = getConnectedGroupIds(movingRef.itemId)
+      if (movingGroupIds.includes(targetRef.itemId)) {
         return false
       }
 
@@ -638,40 +638,109 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
         return false
       }
 
-      // Determine which item should be fixed (target) and which should move
-      // The item being dragged is always the moving one
-      const fixedRef = targetRef
-      const movingRefFinal = movingRef
-
+      // Calculate the transform for the moving item to snap to the target
       const transform = computeConnectionTransform(targetItem, targetConnectorLocal, movingConnectorLocal)
-      const newConnection: EndpointConnection = { endpoints: [fixedRef, movingRefFinal] }
 
-      const movingGroupIds = getConnectedGroupIds(movingRefFinal.itemId)
+      // Calculate group movement parameters
       const deltaRotation = normalizeAngle(transform.rotationDeg - movingItem.rotationDeg)
       const pivotBefore = { x: movingItem.x, y: movingItem.y }
       const pivotAfter = { x: transform.position.x, y: transform.position.y }
 
+      // 1. Calculate new positions for all items in the moving group
+      const newPlacedItems = layout.placedItems.map((item) => {
+        if (!movingGroupIds.includes(item.id)) {
+          return item
+        }
+
+        // Rotate+translate the whole moving group around the moving item pivot
+        const rel = { x: item.x - pivotBefore.x, y: item.y - pivotBefore.y }
+        const rotated = rotatePointLocal(rel.x, rel.y, deltaRotation)
+        const x = pivotAfter.x + rotated.x
+        const y = pivotAfter.y + rotated.y
+
+        return {
+          ...item,
+          x,
+          y,
+          rotationDeg: normalizeAngle(item.rotationDeg + deltaRotation),
+        }
+      })
+
+      // 2. Find ALL valid connections between the moving group (at new positions) and stationary items
+      const newConnections: EndpointConnection[] = []
+      const stationaryItems = newPlacedItems.filter(item => !movingGroupIds.includes(item.id))
+      const movingItemsNew = newPlacedItems.filter(item => movingGroupIds.includes(item.id))
+
+      // Helper to check if an endpoint is already used in our *new* connections list
+      const isUsedInNewConnections = (itemId: string, key: string) => {
+        return newConnections.some(conn =>
+          conn.endpoints.some(ep => ep.itemId === itemId && ep.connectorKey === key)
+        )
+      }
+
+      // Iterate through all moving items at their NEW positions
+      movingItemsNew.forEach(movingItemNew => {
+        const geometry = geometryCache.get(movingItemNew.componentId)
+        if (!geometry) return
+
+        const movingTransform = { x: movingItemNew.x, y: movingItemNew.y, rotationDeg: movingItemNew.rotationDeg }
+
+        listConnectorEntries(geometry).forEach(({ key: movingKey, local: movingLocal }) => {
+          if (isEndpointConnected(movingItemNew.id, movingKey)) return
+          if (isUsedInNewConnections(movingItemNew.id, movingKey)) return
+
+          const movingWorld = transformConnector(movingLocal, movingTransform)
+
+          // Check against all stationary items
+          stationaryItems.forEach(stationaryItem => {
+            const statGeometry = geometryCache.get(stationaryItem.componentId)
+            if (!statGeometry) return
+
+            const statTransform = { x: stationaryItem.x, y: stationaryItem.y, rotationDeg: stationaryItem.rotationDeg }
+
+            listConnectorEntries(statGeometry).forEach(({ key: statKey, local: statLocal }) => {
+              if (isEndpointConnected(stationaryItem.id, statKey)) return
+              if (isUsedInNewConnections(stationaryItem.id, statKey)) return
+
+              const statWorld = transformConnector(statLocal, statTransform)
+
+              // Distance check
+              const dist = Math.hypot(movingWorld.xMm - statWorld.xMm, movingWorld.yMm - statWorld.yMm)
+              if (dist > 1.0) return // Use a tight tolerance since we already snapped the primary one
+
+              // Angle check
+              const angleDiff = normalizeAngle(movingWorld.directionDeg - (statWorld.directionDeg + 180))
+              if (Math.abs(angleDiff) > 5.0) return // Tight angle tolerance
+
+              // Width check
+              if (Math.abs(movingLocal.widthMm - statLocal.widthMm) > 1e-3) return
+
+              // Found a match!
+              newConnections.push({
+                endpoints: [
+                  { itemId: stationaryItem.id, connectorKey: statKey },
+                  { itemId: movingItemNew.id, connectorKey: movingKey }
+                ]
+              })
+            })
+          })
+        })
+      })
+
+      // If for some reason the primary connection wasn't found (e.g. slight float error), force add it
+      const primaryExists = newConnections.some(conn =>
+        conn.endpoints.some(ep => ep.itemId === targetRef.itemId && ep.connectorKey === targetRef.connectorKey) &&
+        conn.endpoints.some(ep => ep.itemId === movingRef.itemId && ep.connectorKey === movingRef.connectorKey)
+      )
+
+      if (!primaryExists) {
+        newConnections.push({ endpoints: [targetRef, movingRef] })
+      }
+
       onUpdateLayout((previous) => ({
         ...previous,
-        placedItems: previous.placedItems.map((item) => {
-          if (!movingGroupIds.includes(item.id)) {
-            return item
-          }
-
-          // Rotate+translate the whole moving group around the moving item pivot
-          const rel = { x: item.x - pivotBefore.x, y: item.y - pivotBefore.y }
-          const rotated = rotatePointLocal(rel.x, rel.y, deltaRotation)
-          const x = pivotAfter.x + rotated.x
-          const y = pivotAfter.y + rotated.y
-
-          return {
-            ...item,
-            x,
-            y,
-            rotationDeg: normalizeAngle(item.rotationDeg + deltaRotation),
-          }
-        }),
-        connections: [...(previous.connections ?? []), newConnection],
+        placedItems: newPlacedItems,
+        connections: [...(previous.connections ?? []), ...newConnections],
       }))
 
       return true
@@ -685,6 +754,7 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       layout,
       onUpdateLayout,
       trackSystem,
+      listConnectorEntries
     ],
   )
 
