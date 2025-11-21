@@ -190,14 +190,61 @@ function App() {
       return
     }
 
-    const svg = buildLayoutSvgString(activeLayout, activeTrackSystem)
-    const blob = new Blob([svg], { type: 'image/svg+xml' })
+    // Prepare track usage data for SVG export
+    const trackUsageData = componentCounts.map((entry) => ({
+      componentId: entry.componentId,
+      label: entry.label,
+      count: entry.count,
+    }))
+
+    const svg = buildLayoutSvgString(activeLayout, activeTrackSystem, { trackUsage: trackUsageData })
+
+    // Wrap SVG in HTML document for proper sizing
+    const htmlWrapper = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>${activeProject.name ?? 'Layout'} - Track Plan</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 20px;
+      background: white;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      min-height: 100vh;
+    }
+    svg {
+      display: block;
+      max-width: 100%;
+      height: auto;
+    }
+  </style>
+</head>
+<body>
+  ${svg}
+</body>
+</html>`
+
+    const blob = new Blob([htmlWrapper], { type: 'text/html' })
     const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = buildFileName(activeProject.name ?? 'layout', 'svg')
-    a.click()
-    URL.revokeObjectURL(url)
+
+    // Open SVG in new window instead of downloading
+    const newWindow = window.open(url, '_blank')
+
+    // Clean up blob URL after a delay to ensure window has loaded
+    if (newWindow) {
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+    } else {
+      // Fallback to download if popup was blocked
+      console.warn('Popup blocked - falling back to download')
+      const a = document.createElement('a')
+      a.href = url
+      a.download = buildFileName(activeProject.name ?? 'layout', 'html')
+      a.click()
+      URL.revokeObjectURL(url)
+    }
   }
 
   const handleExportProjectJson = () => {

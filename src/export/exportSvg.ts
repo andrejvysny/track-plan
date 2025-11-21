@@ -21,10 +21,14 @@ const TRACK_STROKE_WIDTH_MM = 28
 const EXPORT_BLACK = '#000'
 const ENDPOINT_CIRCLE_RADIUS = 8
 const LABEL_OFFSET_MM = 18
+const LABEL_FONT_SIZE = 16
 const SHAPE_STROKE_WIDTH = 2
 const DIMENSION_TICK_LENGTH_MM = 8
 const DIMENSION_TEXT_PADDING_MM = 2
 const DIMENSION_FONT_SIZE = 8
+const METADATA_FONT_SIZE = 14
+const CANVAS_OUTLINE_STROKE_WIDTH = 1
+const METADATA_SPACING = 16
 
 type Bounds = {
   minX: number
@@ -132,7 +136,7 @@ const computeLabelAnchor = (connectors: ConnectorEntry[]) => {
 const escapeXml = (value: string) =>
   value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 
-const trackBoundsPadding = TRACK_STROKE_WIDTH_MM / 2 + ENDPOINT_CIRCLE_RADIUS
+const trackBoundsPadding = TRACK_STROKE_WIDTH_MM / 4
 
 const estimateTextWidth = (text: string, fontSize: number) => {
   const length = Math.max(text.length, 1)
@@ -154,6 +158,89 @@ const getDimensionGeometry = (shape: CanvasDimensionShape) => {
 const formatDimensionLabel = (shape: CanvasDimensionShape) => shape.label ?? `${shape.length.toFixed(1)} mm`
 
 const isDimensionShape = (shape: CanvasShape): shape is CanvasDimensionShape => shape.type === 'dimension'
+
+type TrackUsageEntry = {
+  componentId: string
+  label: string
+  count: number
+}
+
+const buildTrackUsageList = (
+  usageData: TrackUsageEntry[],
+  bounds: Bounds,
+  paddingMm: number,
+): string => {
+  if (!usageData.length) return ''
+
+  const fontSize = METADATA_FONT_SIZE
+  const lineHeight = fontSize * 1.3
+  const listPadding = 4
+  const startX = bounds.maxX - paddingMm / 2
+  const startY = bounds.maxY - paddingMm / 2
+
+  const title = 'Track Usage:'
+  const titleY = startY - usageData.length * lineHeight - listPadding * 2
+
+  const entries = usageData
+    .map((entry, index) => {
+      const text = `${entry.label}: ${entry.count}x`
+      const y = titleY + lineHeight + index * lineHeight + listPadding
+      return `<text x="${startX}" y="${y}" text-anchor="end" font-size="${fontSize}" fill="${EXPORT_BLACK}">${escapeXml(text)}</text>`
+    })
+    .join('\n')
+
+  return `
+    <g id="track-usage-list">
+      <text x="${startX}" y="${titleY}" text-anchor="end" font-size="${fontSize}" font-weight="bold" fill="${EXPORT_BLACK}">${title}</text>
+      ${entries}
+    </g>
+  `
+}
+
+const buildDimensionsDisplay = (
+  bounds: Bounds,
+  paddingMm: number,
+  trackUsageCount: number,
+): string => {
+  const width = bounds.maxX - bounds.minX
+  const height = bounds.maxY - bounds.minY
+  const fontSize = METADATA_FONT_SIZE
+  const lineHeight = fontSize * 1.3
+
+  // Position in bottom-right, above track usage list
+  const startX = bounds.maxX - paddingMm / 2
+  // Calculate Y position: bottom of bounds minus padding, minus space for track usage list
+  const trackUsageHeight = trackUsageCount * lineHeight + lineHeight + METADATA_SPACING
+  const startY = bounds.maxY - paddingMm / 2 - trackUsageHeight - METADATA_SPACING
+
+  const dimensionText = `Dimensions: ${width.toFixed(1)} × ${height.toFixed(1)} mm`
+
+  return `
+    <g id="dimensions-display">
+      <text x="${startX}" y="${startY}" text-anchor="end" font-size="${fontSize}" font-weight="bold" fill="${EXPORT_BLACK}">${escapeXml(dimensionText)}</text>
+    </g>
+  `
+}
+
+const buildCanvasOutline = (bounds: Bounds): string => {
+  const x = bounds.minX
+  const y = bounds.minY
+  const width = bounds.maxX - bounds.minX
+  const height = bounds.maxY - bounds.minY
+
+  return `
+    <rect 
+      x="${x}" 
+      y="${y}" 
+      width="${width}" 
+      height="${height}" 
+      fill="none" 
+      stroke="${EXPORT_BLACK}" 
+      stroke-width="${CANVAS_OUTLINE_STROKE_WIDTH}" 
+    />
+  `
+}
+
 
 const getShapeBounds = (shape: CanvasShape): Bounds => {
   if (isDimensionShape(shape)) {
@@ -334,9 +421,9 @@ const buildShapeElement = (shape: CanvasShape) => {
 export function buildLayoutSvgString(
   layout: LayoutState,
   trackSystem: TrackSystemDefinition,
-  options?: { paddingMm?: number },
+  options?: { paddingMm?: number; trackUsage?: TrackUsageEntry[] },
 ) {
-  const padding = options?.paddingMm ?? 50
+  const padding = options?.paddingMm ?? 2
   const componentMap = new Map<string, TrackComponentDefinition>()
   trackSystem.components.forEach((component) => componentMap.set(component.id, component))
 
@@ -357,48 +444,29 @@ export function buildLayoutSvgString(
     const labelY = item.y + rotatedLabelAnchor.y + labelOffsetPoint.y
 
     const path = geometry.buildPathD()
-    const connectorCircles = connectorEntries
-      .map(({ local }) => {
-        return `<circle cx="${local.xMm}" cy="${local.yMm}" r="${ENDPOINT_CIRCLE_RADIUS}" fill="${EXPORT_BLACK}" stroke="${EXPORT_BLACK}" stroke-width="1" opacity="0.8"/>`
-      })
-      .join('')
+    const trackColor = component.color ?? EXPORT_BLACK
 
     trackElements.push(`
       <g>
         <g transform="translate(${item.x} ${item.y}) rotate(${item.rotationDeg})">
           <path
             d="${path}"
-            fill="${EXPORT_BLACK}"
-            stroke="${EXPORT_BLACK}"
+            fill="${trackColor}"
+            stroke="${trackColor}"
             stroke-width="${TRACK_STROKE_WIDTH_MM}"
             stroke-linecap="butt"
             stroke-linejoin="miter"
           />
-          ${connectorCircles}
         </g>
-        <text x="${labelX}" y="${labelY}" text-anchor="middle" font-size="10" fill="${EXPORT_BLACK}">${escapeXml(
-          component.id,
-        )}</text>
+        <text x="${labelX}" y="${labelY}" text-anchor="middle" font-size="${LABEL_FONT_SIZE}" font-weight="bold" fill="${EXPORT_BLACK}">${escapeXml(
+      component.id,
+    )}</text>
       </g>
     `.trim())
 
     const localBounds = expandBounds(getLocalBounds(component, TRACK_STROKE_WIDTH_MM), trackBoundsPadding)
     const worldBounds = transformBounds(localBounds, item.x, item.y, item.rotationDeg)
     bounds = mergeBounds(bounds, worldBounds)
-
-    connectorEntries.forEach(({ local }) => {
-      const connectorBounds = expandBounds(
-        {
-          minX: local.xMm,
-          maxX: local.xMm,
-          minY: local.yMm,
-          maxY: local.yMm,
-        },
-        ENDPOINT_CIRCLE_RADIUS,
-      )
-      const worldConnectorBounds = transformBounds(connectorBounds, item.x, item.y, item.rotationDeg)
-      bounds = mergeBounds(bounds, worldConnectorBounds)
-    })
   })
 
   layout.shapes.forEach((shape) => {
@@ -414,7 +482,18 @@ export function buildLayoutSvgString(
   const padded = expandBounds(bounds, padding)
   const width = padded.maxX - padded.minX
   const height = padded.maxY - padded.minY
-  const content = [...trackElements, ...shapeElements].join('\n')
+
+  // Add canvas outline (first so it appears behind content)
+  const canvasOutline = buildCanvasOutline(padded)
+
+  // Add track usage list and dimensions display
+  const trackUsageData = options?.trackUsage ?? []
+  const trackUsageList = trackUsageData.length ? buildTrackUsageList(trackUsageData, padded, padding) : ''
+  const dimensionsDisplay = buildDimensionsDisplay(bounds, padding, trackUsageData.length)
+
+  const content = [canvasOutline, ...trackElements, ...shapeElements, trackUsageList, dimensionsDisplay]
+    .filter(Boolean)
+    .join('\n')
 
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${padded.minX} ${padded.minY} ${width} ${height}" fill="none">${content}</svg>`
 }
