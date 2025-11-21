@@ -1901,7 +1901,7 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                       pointerEvents="none"
                     />
                   )}
-                  {connectorEntries.map(({ key, local }) => {
+                  {!showColors && connectorEntries.map(({ key, local }) => {
                     const isEndpointSelected = selectedEndpoints.some(
                       (endpoint) => endpoint.itemId === item.id && endpoint.connectorKey === key,
                     )

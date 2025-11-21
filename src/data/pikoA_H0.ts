@@ -109,10 +109,10 @@ export const pikoA_H0: TrackSystemDefinition = {
       clockwise: false,
     },
     {
-      id: 'WR',
-      label: 'WR Right Switch 15° R9',
+      id: 'WL',
+      label: 'WL Left Switch 15° R9',
       type: 'switch',
-      article: '55220',
+      article: '55221',
       color: '#52BE80',
       lengthMm: 239,
       meta: {
@@ -124,10 +124,10 @@ export const pikoA_H0: TrackSystemDefinition = {
       },
     },
     {
-      id: 'WL',
-      label: 'WL Left Switch 15° R9',
+      id: 'WR',
+      label: 'WR Right Switch 15° R9',
       type: 'switch',
-      article: '55221',
+      article: '55220',
       color: '#52BE80',
       lengthMm: 239,
       meta: {
