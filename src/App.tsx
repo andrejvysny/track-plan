@@ -1,21 +1,22 @@
-import type { ChangeEventHandler } from 'react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { TrackComponentDefinition, TrackComponentType } from './types/trackSystem'
-import { pikoA_H0 } from './data/pikoA_H0'
-import { Canvas, type CanvasHandle } from './components/Layout/Canvas'
-import { ComponentsSidebar } from './components/Layout/ComponentsSidebar'
-import { ProjectsSidebar } from './components/Layout/ProjectsSidebar'
-import { TopToolbar } from './components/Layout/TopToolbar'
-import { TrackUsageCounter } from './components/Layout/TrackUsageCounter'
-import { useProjectsState } from './state/projectsState'
-import { buildLayoutSvgString } from './export/exportSvg'
-import type { EndpointRef } from './types/trackSystem'
-import type { ShapeType } from './types/layout'
-import { ROTATION_STEP_DEG } from './constants/layout'
-import { TRACK_COMPONENT_TYPES } from './constants/trackUsage'
-import type { TrackUsageComponentCount, TrackUsageSummary } from './types/trackUsage'
-import { connectionMatchesEndpoints } from './utils/connectionUtils'
-import { buildProjectExport, parseProjectImport } from './utils/projectSerialization'
+import type { ChangeEventHandler } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { TrackComponentDefinition, TrackComponentType } from './types/trackSystem';
+import { pikoA_H0 } from './data/pikoA_H0';
+import { Canvas, type CanvasHandle } from './components/Layout/Canvas';
+import { ComponentsSidebar } from './components/Layout/ComponentsSidebar';
+import { ProjectsSidebar } from './components/Layout/ProjectsSidebar';
+import { TopToolbar } from './components/Layout/TopToolbar';
+import { TrackUsageCounter } from './components/Layout/TrackUsageCounter';
+import { useProjectsState } from './state/projectsState';
+import { buildLayoutSvgString } from './export/exportSvg';
+import type { EndpointRef } from './types/trackSystem';
+import type { ShapeType } from './types/layout';
+import { ROTATION_STEP_DEG } from './constants/layout';
+import { generateId } from './utils/idGenerator';
+import { TRACK_COMPONENT_TYPES } from './constants/trackUsage';
+import type { TrackUsageComponentCount, TrackUsageSummary } from './types/trackUsage';
+import { connectionMatchesEndpoints } from './utils/connectionUtils';
+import { buildProjectExport, parseProjectImport } from './utils/projectSerialization';
 
 function App() {
   const {
@@ -32,71 +33,79 @@ function App() {
     canUndo,
     canRedo,
     addImportedProject,
-  } = useProjectsState()
+  } = useProjectsState();
 
-  const activeLayout = activeProject?.layout ?? null
-  const canvasRef = useRef<CanvasHandle | null>(null)
-  const importInputRef = useRef<HTMLInputElement | null>(null)
-  const [selectedItemIds, setSelectedItemIds] = useState<Set<string>>(new Set())
-  const [selectedEndpoints, setSelectedEndpoints] = useState<EndpointRef[]>([])
-  const [debugMode, setDebugMode] = useState(false)
-  const [showColors, setShowColors] = useState(true)
-  const [drawingTool, setDrawingTool] = useState<ShapeType | null>(null)
+  const activeLayout = activeProject?.layout ?? null;
+  const canvasRef = useRef<CanvasHandle | null>(null);
+  const importInputRef = useRef<HTMLInputElement | null>(null);
+  const [selectedItemIds, setSelectedItemIds] = useState<Set<string>>(new Set());
+  const [selectedEndpoints, setSelectedEndpoints] = useState<EndpointRef[]>([]);
+  const [debugMode, setDebugMode] = useState(false);
+  const [showColors, setShowColors] = useState(true);
+  const [drawingTool, setDrawingTool] = useState<ShapeType | null>(null);
 
   const activeTrackSystem = useMemo(() => {
-    const system = activeLayout?.trackSystems.find((system) => system.id === activeLayout.activeTrackSystemId) ?? null
+    const system =
+      activeLayout?.trackSystems.find((system) => system.id === activeLayout.activeTrackSystemId) ??
+      null;
     // Always use the fresh definition for Piko A H0 to ensure we have the latest metadata (colors, etc)
     if (system?.id === pikoA_H0.id) {
-      return pikoA_H0
+      return pikoA_H0;
     }
-    return system
-  }, [activeLayout])
+    return system;
+  }, [activeLayout]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       // Ignore if typing in an input
       if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) {
-        return
+        return;
       }
 
       // Ignore if content editable is focused (e.g. text shape editor)
       if ((event.target as HTMLElement).isContentEditable) {
-        return
+        return;
       }
 
-      const isMod = event.ctrlKey || event.metaKey
-      const isShift = event.shiftKey
+      const isMod = event.ctrlKey || event.metaKey;
+      const isShift = event.shiftKey;
 
       if (isMod && !isShift && event.key.toLowerCase() === 'z') {
-        event.preventDefault()
-        if (canUndo) undo()
+        event.preventDefault();
+        if (canUndo) undo();
       }
 
-      if ((isMod && isShift && event.key.toLowerCase() === 'z') || (isMod && event.key.toLowerCase() === 'y')) {
-        event.preventDefault()
-        if (canRedo) redo()
+      if (
+        (isMod && isShift && event.key.toLowerCase() === 'z') ||
+        (isMod && event.key.toLowerCase() === 'y')
+      ) {
+        event.preventDefault();
+        if (canRedo) redo();
       }
-    }
+    };
 
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [canUndo, canRedo, undo, redo])
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [canUndo, canRedo, undo, redo]);
 
   const trackUsageSummary = useMemo<TrackUsageSummary>(() => {
-    const countsByType = TRACK_COMPONENT_TYPES.reduce<Record<TrackComponentType, number>>((acc, type) => {
-      acc[type] = 0
-      return acc
-    }, {} as Record<TrackComponentType, number>)
+    const countsByType = TRACK_COMPONENT_TYPES.reduce<Record<TrackComponentType, number>>(
+      (acc, type) => {
+        acc[type] = 0;
+        return acc;
+      },
+      {} as Record<TrackComponentType, number>
+    );
 
     if (!activeLayout || !activeTrackSystem) {
       return {
         totalCount: 0,
         countsByType,
         componentCounts: [],
-      }
+      };
     }
 
-    const componentCountMap = new Map<string, TrackUsageComponentCount>()
+    const componentCountMap = new Map<string, TrackUsageComponentCount>();
 
     activeTrackSystem.components.forEach((component) => {
       componentCountMap.set(component.id, {
@@ -105,69 +114,71 @@ function App() {
         type: component.type,
         article: component.article,
         count: 0,
-      })
-    })
+      });
+    });
 
     activeLayout.placedItems.forEach((item) => {
-      const existingEntry = componentCountMap.get(item.componentId)
-      const type = existingEntry?.type ?? 'other'
-      countsByType[type] += 1
+      const existingEntry = componentCountMap.get(item.componentId);
+      const type = existingEntry?.type ?? 'other';
+      countsByType[type] += 1;
 
       if (existingEntry) {
-        existingEntry.count += 1
+        existingEntry.count += 1;
       } else {
         componentCountMap.set(item.componentId, {
           componentId: item.componentId,
           label: item.componentId,
           type,
           count: 1,
-        })
+        });
       }
-    })
+    });
 
-    const componentCounts = Array.from(componentCountMap.values()).filter((entry) => entry.count > 0)
+    const componentCounts = Array.from(componentCountMap.values()).filter(
+      (entry) => entry.count > 0
+    );
 
     return {
       totalCount: activeLayout.placedItems.length,
       countsByType,
       componentCounts,
-    }
-  }, [activeLayout, activeTrackSystem])
+    };
+  }, [activeLayout, activeTrackSystem]);
 
-  const { totalCount: usageTotalCount, countsByType, componentCounts } = trackUsageSummary
+  const { totalCount: usageTotalCount, countsByType, componentCounts } = trackUsageSummary;
 
   const selectedItems = useMemo(
     () => activeLayout?.placedItems.filter((item) => selectedItemIds.has(item.id)) ?? [],
-    [activeLayout, selectedItemIds],
-  )
+    [activeLayout, selectedItemIds]
+  );
   const selectedItemsConnected = useMemo(() => {
-    if (selectedItemIds.size === 0 || !activeLayout) return false
+    if (selectedItemIds.size === 0 || !activeLayout) return false;
     return Boolean(
       activeLayout.connections?.some((connection) =>
-        connection.endpoints.some((endpoint) => selectedItemIds.has(endpoint.itemId)),
-      ),
-    )
-  }, [activeLayout, selectedItemIds])
-  const isSelectionGrounded = selectedItems.some((item) => item.isGrounded)
+        connection.endpoints.some((endpoint) => selectedItemIds.has(endpoint.itemId))
+      )
+    );
+  }, [activeLayout, selectedItemIds]);
+  const isSelectionGrounded = selectedItems.some((item) => item.isGrounded);
 
   const handleRenameProject = (id: string) => {
-    const project = projectsState.projects.find((candidate) => candidate.id === id)
-    const currentName = project?.name ?? ''
-    const newName = window.prompt('New project name', currentName)?.trim()
+    const project = projectsState.projects.find((candidate) => candidate.id === id);
+    const currentName = project?.name ?? '';
+    const newName = window.prompt('New project name', currentName)?.trim();
     if (newName) {
-      renameProject(id, newName)
+      renameProject(id, newName);
     }
-  }
+  };
 
   const handleDeleteProject = (id: string) => {
     if (window.confirm('Delete this project?')) {
-      deleteProject(id)
+      deleteProject(id);
     }
-  }
+  };
 
   const handleResetLayout = () => {
     if (!activeProject) {
-      return
+      return;
     }
 
     updateActiveProjectLayout((layout) => ({
@@ -175,19 +186,23 @@ function App() {
       placedItems: [],
       connections: [],
       shapes: [],
-    }))
-  }
+    }));
+  };
 
   const buildFileName = (name: string, extension: string) => {
-    const safeBase = name.trim().replace(/[^a-z0-9-_]+/gi, '_').replace(/_+/g, '_').replace(/^_+|_+$/g, '')
-    const fallback = safeBase.length > 0 ? safeBase : 'project'
-    return `${fallback}.${extension}`
-  }
+    const safeBase = name
+      .trim()
+      .replace(/[^a-z0-9-_]+/gi, '_')
+      .replace(/_+/g, '_')
+      .replace(/^_+|_+$/g, '');
+    const fallback = safeBase.length > 0 ? safeBase : 'project';
+    return `${fallback}.${extension}`;
+  };
 
   const handleExportSvg = () => {
     if (!activeProject || !activeLayout || !activeTrackSystem) {
-      console.warn('Nothing to export yet')
-      return
+      console.warn('Nothing to export yet');
+      return;
     }
 
     // Prepare track usage data for SVG export
@@ -195,9 +210,11 @@ function App() {
       componentId: entry.componentId,
       label: entry.label,
       count: entry.count,
-    }))
+    }));
 
-    const svg = buildLayoutSvgString(activeLayout, activeTrackSystem, { trackUsage: trackUsageData })
+    const svg = buildLayoutSvgString(activeLayout, activeTrackSystem, {
+      trackUsage: trackUsageData,
+    });
 
     // Wrap SVG in HTML document for proper sizing
     const htmlWrapper = `<!DOCTYPE html>
@@ -225,82 +242,79 @@ function App() {
 <body>
   ${svg}
 </body>
-</html>`
+</html>`;
 
-    const blob = new Blob([htmlWrapper], { type: 'text/html' })
-    const url = URL.createObjectURL(blob)
+    const blob = new Blob([htmlWrapper], { type: 'text/html' });
+    const url = URL.createObjectURL(blob);
 
     // Open SVG in new window instead of downloading
-    const newWindow = window.open(url, '_blank')
+    const newWindow = window.open(url, '_blank');
 
     // Clean up blob URL after a delay to ensure window has loaded
     if (newWindow) {
-      setTimeout(() => URL.revokeObjectURL(url), 1000)
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
     } else {
       // Fallback to download if popup was blocked
-      console.warn('Popup blocked - falling back to download')
-      const a = document.createElement('a')
-      a.href = url
-      a.download = buildFileName(activeProject.name ?? 'layout', 'html')
-      a.click()
-      URL.revokeObjectURL(url)
+      console.warn('Popup blocked - falling back to download');
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = buildFileName(activeProject.name ?? 'layout', 'html');
+      a.click();
+      URL.revokeObjectURL(url);
     }
-  }
+  };
 
   const handleExportProjectJson = () => {
     if (!activeProject) {
-      window.alert('No project selected to export.')
-      return
+      window.alert('No project selected to export.');
+      return;
     }
 
-    const exportString = buildProjectExport(activeProject)
-    const blob = new Blob([exportString], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = buildFileName(activeProject.name ?? 'project', 'json')
-    a.click()
-    URL.revokeObjectURL(url)
-  }
+    const exportString = buildProjectExport(activeProject);
+    const blob = new Blob([exportString], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = buildFileName(activeProject.name ?? 'project', 'json');
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
   const handleImportRequest = () => {
-    importInputRef.current?.click()
-  }
+    importInputRef.current?.click();
+  };
 
   const handleImportFile: ChangeEventHandler<HTMLInputElement> = async (event) => {
-    const file = event.target.files?.[0]
-    if (!file) return
+    const file = event.target.files?.[0];
+    if (!file) return;
 
     try {
-      const content = await file.text()
-      const parsed = parseProjectImport(content)
+      const content = await file.text();
+      const parsed = parseProjectImport(content);
       if (!parsed.ok) {
-        window.alert(`Import failed: ${parsed.error}`)
-        return
+        window.alert(`Import failed: ${parsed.error}`);
+        return;
       }
 
-      addImportedProject(parsed.project)
+      addImportedProject(parsed.project);
     } catch (error) {
-      console.error('Failed to import project', error)
-      window.alert('Failed to import project. Please check the console for details.')
+      console.error('Failed to import project', error);
+      window.alert('Failed to import project. Please check the console for details.');
     } finally {
-      event.target.value = ''
+      event.target.value = '';
     }
-  }
+  };
 
   const addComponentToLayout = useCallback(
     (component: TrackComponentDefinition, position?: { x: number; y: number }) => {
-      if (!activeTrackSystem) return
+      if (!activeTrackSystem) return;
 
       updateActiveProjectLayout((previous) => ({
         ...previous,
         placedItems: [
           ...previous.placedItems,
           {
-            id:
-              typeof crypto !== 'undefined' && 'randomUUID' in crypto
-                ? crypto.randomUUID()
-                : `item-${Date.now()}-${previous.placedItems.length}`,
+            id: generateId(),
             trackSystemId: activeTrackSystem.id,
             componentId: component.id,
             x: position?.x ?? 0,
@@ -308,63 +322,64 @@ function App() {
             rotationDeg: 0,
           },
         ],
-      }))
+      }));
     },
-    [activeTrackSystem, updateActiveProjectLayout],
-  )
+    [activeTrackSystem, updateActiveProjectLayout]
+  );
 
   const handleComponentClick = (component: TrackComponentDefinition) => {
-    addComponentToLayout(component)
-  }
+    addComponentToLayout(component);
+  };
 
   const handleRotateSelected = (deltaDeg: number) => {
-    canvasRef.current?.rotateSelected(deltaDeg)
-  }
+    canvasRef.current?.rotateSelected(deltaDeg);
+  };
 
   const handleConnectEndpoints = () => {
-    canvasRef.current?.connectSelectedEndpoints()
-  }
+    canvasRef.current?.connectSelectedEndpoints();
+  };
 
   const handleDisconnectEndpoints = () => {
-    canvasRef.current?.disconnectSelectedEndpoints()
-  }
+    canvasRef.current?.disconnectSelectedEndpoints();
+  };
 
   const handleDeleteSelected = () => {
-    canvasRef.current?.deleteSelectedItem()
-  }
+    canvasRef.current?.deleteSelectedItem();
+  };
 
   const handleDimensionAction = (type: 'center' | 'inner' | 'outer' = 'center') => {
-    const created = canvasRef.current?.addDimensionBetweenSelectedTracks(type) ?? false
+    const created = canvasRef.current?.addDimensionBetweenSelectedTracks(type) ?? false;
     if (created) {
-      setDrawingTool(null)
+      setDrawingTool(null);
     }
-    return created
-  }
+    return created;
+  };
 
   const handleToggleGrounded = () => {
-    if (selectedItemIds.size === 0) return
+    if (selectedItemIds.size === 0) return;
     updateActiveProjectLayout((layout) => ({
       ...layout,
       placedItems: layout.placedItems.map((item) =>
-        selectedItemIds.has(item.id) ? { ...item, isGrounded: !item.isGrounded } : item,
+        selectedItemIds.has(item.id) ? { ...item, isGrounded: !item.isGrounded } : item
       ),
-    }))
-  }
+    }));
+  };
 
-  const canRotateSelection = selectedItemIds.size > 0 && !selectedItemsConnected && !isSelectionGrounded
+  const canRotateSelection =
+    selectedItemIds.size > 0 && !selectedItemsConnected && !isSelectionGrounded;
   // Note: Shape deletion is handled internally by Canvas, so we only check for item selection here
-  const canDeleteSelection = selectedItemIds.size > 0
-  const canConnectEndpoints = selectedEndpoints.length === 2
+  const canDeleteSelection = selectedItemIds.size > 0;
+  const canConnectEndpoints = selectedEndpoints.length === 2;
   const canDisconnectEndpoints = useMemo(() => {
-    if (!activeLayout) return false
-    if (selectedEndpoints.length !== 2) return false
+    if (!activeLayout) return false;
+    if (selectedEndpoints.length !== 2) return false;
     return Boolean(
       activeLayout.connections?.some((connection) =>
-        connectionMatchesEndpoints(connection, selectedEndpoints),
-      ),
-    )
-  }, [activeLayout, selectedEndpoints])
-  const canToggleGroundSelection = selectedItemIds.size > 0
+        connectionMatchesEndpoints(connection, selectedEndpoints)
+      )
+    );
+  }, [activeLayout, selectedEndpoints]);
+  const canToggleGroundSelection = selectedItemIds.size > 0;
 
   return (
     <div className="app-root flex h-screen flex-col bg-slate-950 text-slate-100">
@@ -436,7 +451,10 @@ function App() {
           />
         </div>
 
-        <ComponentsSidebar trackSystem={activeTrackSystem} onComponentClick={handleComponentClick} />
+        <ComponentsSidebar
+          trackSystem={activeTrackSystem}
+          onComponentClick={handleComponentClick}
+        />
       </div>
       <TrackUsageCounter
         totalCount={usageTotalCount}
@@ -444,7 +462,7 @@ function App() {
         componentCounts={componentCounts}
       />
     </div>
-  )
+  );
 }
 
-export default App
+export default App;

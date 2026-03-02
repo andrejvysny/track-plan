@@ -1,302 +1,332 @@
-import { useCallback, useMemo, useState } from 'react'
-import type { Project } from '../types/project'
-import type { LayoutState } from '../types/layout'
-import { createNewProject } from '../types/project'
-import { createDefaultLayoutState } from './layoutState'
-import { useLocalStorageState } from '../hooks/useLocalStorageState'
-import { cloneLayoutState } from '../utils/cloneLayout'
-import type { ProjectImportData } from '../utils/projectSerialization'
+import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react';
+import type { Project } from '../types/project';
+import type { LayoutState } from '../types/layout';
+import { createNewProject } from '../types/project';
+import { createDefaultLayoutState } from './layoutState';
+import { cloneLayoutState } from '../utils/cloneLayout';
+import type { ProjectImportData } from '../utils/projectSerialization';
 
 export interface ProjectsState {
-  projects: Project[]
-  activeProjectId: string | null
+  projects: Project[];
+  activeProjectId: string | null;
 }
 
-const STORAGE_KEY = 'track-planner-projects-v1'
-const MAX_HISTORY_ENTRIES = 60
+const STORAGE_KEY = 'track-planner-projects-v1';
+const MAX_HISTORY_ENTRIES = 60;
 
 type LayoutHistory = {
-  undoStack: LayoutState[]
-  redoStack: LayoutState[]
+  undoStack: LayoutState[];
+  redoStack: LayoutState[];
+};
+
+type CombinedState = {
+  projects: Project[];
+  activeProjectId: string | null;
+  historyMap: Record<string, LayoutHistory>;
+};
+
+type Action =
+  | {
+      type: 'UPDATE_LAYOUT';
+      updater: (layout: LayoutState) => LayoutState;
+      recordHistory: boolean;
+    }
+  | { type: 'REPLACE_PROJECTS'; state: ProjectsState }
+  | { type: 'SET_ACTIVE_PROJECT'; id: string }
+  | { type: 'CREATE_PROJECT'; project: Project }
+  | { type: 'ADD_IMPORTED_PROJECT'; project: Project }
+  | { type: 'RENAME_PROJECT'; id: string; name: string }
+  | { type: 'DELETE_PROJECT'; id: string }
+  | { type: 'UNDO' }
+  | { type: 'REDO' }
+  | { type: 'RELOAD'; state: ProjectsState };
+
+const emptyHistory: LayoutHistory = { undoStack: [], redoStack: [] };
+
+function getActiveProject(state: CombinedState): Project | null {
+  return state.projects.find((p) => p.id === state.activeProjectId) ?? null;
 }
 
-function createInitialProjectsState(): ProjectsState {
-  const project = createNewProject('Project 1', createDefaultLayoutState())
-  return {
-    projects: [project],
-    activeProjectId: project.id,
+function getHistory(state: CombinedState, projectId: string): LayoutHistory {
+  return state.historyMap[projectId] ?? emptyHistory;
+}
+
+function reducer(state: CombinedState, action: Action): CombinedState {
+  switch (action.type) {
+    case 'UPDATE_LAYOUT': {
+      if (!state.activeProjectId) return state;
+      const activeId = state.activeProjectId;
+      const currentProject = state.projects.find((p) => p.id === activeId);
+      if (!currentProject) return state;
+
+      const nextHistory = action.recordHistory
+        ? {
+            undoStack: [
+              cloneLayoutState(currentProject.layout),
+              ...getHistory(state, activeId).undoStack,
+            ].slice(0, MAX_HISTORY_ENTRIES),
+            redoStack: [],
+          }
+        : state.historyMap[activeId];
+
+      return {
+        ...state,
+        projects: state.projects.map((p) =>
+          p.id === activeId
+            ? {
+                ...p,
+                layout: action.updater(p.layout),
+                updatedAt: new Date().toISOString(),
+              }
+            : p
+        ),
+        historyMap: nextHistory
+          ? { ...state.historyMap, [activeId]: nextHistory }
+          : state.historyMap,
+      };
+    }
+
+    case 'UNDO': {
+      if (!state.activeProjectId) return state;
+      const activeId = state.activeProjectId;
+      const currentProject = state.projects.find((p) => p.id === activeId);
+      if (!currentProject) return state;
+      const history = getHistory(state, activeId);
+      if (history.undoStack.length === 0) return state;
+
+      const [latest, ...remainingUndo] = history.undoStack;
+      return {
+        ...state,
+        projects: state.projects.map((p) =>
+          p.id === activeId ? { ...p, layout: latest, updatedAt: new Date().toISOString() } : p
+        ),
+        historyMap: {
+          ...state.historyMap,
+          [activeId]: {
+            undoStack: remainingUndo,
+            redoStack: [cloneLayoutState(currentProject.layout), ...history.redoStack].slice(
+              0,
+              MAX_HISTORY_ENTRIES
+            ),
+          },
+        },
+      };
+    }
+
+    case 'REDO': {
+      if (!state.activeProjectId) return state;
+      const activeId = state.activeProjectId;
+      const currentProject = state.projects.find((p) => p.id === activeId);
+      if (!currentProject) return state;
+      const history = getHistory(state, activeId);
+      if (history.redoStack.length === 0) return state;
+
+      const [nextEntry, ...remainingRedo] = history.redoStack;
+      return {
+        ...state,
+        projects: state.projects.map((p) =>
+          p.id === activeId ? { ...p, layout: nextEntry, updatedAt: new Date().toISOString() } : p
+        ),
+        historyMap: {
+          ...state.historyMap,
+          [activeId]: {
+            undoStack: [cloneLayoutState(currentProject.layout), ...history.undoStack].slice(
+              0,
+              MAX_HISTORY_ENTRIES
+            ),
+            redoStack: remainingRedo,
+          },
+        },
+      };
+    }
+
+    case 'SET_ACTIVE_PROJECT':
+      return { ...state, activeProjectId: action.id };
+
+    case 'CREATE_PROJECT':
+      return {
+        ...state,
+        projects: [...state.projects, action.project],
+        activeProjectId: action.project.id,
+        historyMap: {
+          ...state.historyMap,
+          [action.project.id]: emptyHistory,
+        },
+      };
+
+    case 'ADD_IMPORTED_PROJECT':
+      return {
+        ...state,
+        projects: [...state.projects, action.project],
+        activeProjectId: action.project.id,
+        historyMap: {
+          ...state.historyMap,
+          [action.project.id]: emptyHistory,
+        },
+      };
+
+    case 'RENAME_PROJECT':
+      return {
+        ...state,
+        projects: state.projects.map((p) =>
+          p.id === action.id ? { ...p, name: action.name, updatedAt: new Date().toISOString() } : p
+        ),
+      };
+
+    case 'DELETE_PROJECT': {
+      const remaining = state.projects.filter((p) => p.id !== action.id);
+      const nextActive =
+        state.activeProjectId === action.id ? (remaining[0]?.id ?? null) : state.activeProjectId;
+      const nextHistoryMap = { ...state.historyMap };
+      delete nextHistoryMap[action.id];
+      return {
+        ...state,
+        projects: remaining,
+        activeProjectId: nextActive,
+        historyMap: nextHistoryMap,
+      };
+    }
+
+    case 'REPLACE_PROJECTS':
+      return {
+        ...state,
+        projects: action.state.projects,
+        activeProjectId: action.state.activeProjectId,
+      };
+
+    case 'RELOAD':
+      return {
+        projects: action.state.projects,
+        activeProjectId: action.state.activeProjectId,
+        historyMap: {},
+      };
+
+    default:
+      return state;
   }
 }
 
+function readStoredState(): ProjectsState | null {
+  if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') {
+    return null;
+  }
+  try {
+    const stored = window.localStorage.getItem(STORAGE_KEY);
+    if (!stored) return null;
+    return JSON.parse(stored) as ProjectsState;
+  } catch {
+    return null;
+  }
+}
+
+function createInitialState(): CombinedState {
+  const stored = readStoredState();
+  const base =
+    stored ??
+    (() => {
+      const project = createNewProject('Project 1', createDefaultLayoutState());
+      return { projects: [project], activeProjectId: project.id };
+    })();
+  return { ...base, historyMap: {} };
+}
+
 export function useProjectsState() {
-  const [projectsState, setProjectsState] = useLocalStorageState<ProjectsState>(
-    STORAGE_KEY,
-    createInitialProjectsState(),
-  )
-  const [historyMap, setHistoryMap] = useState<Record<string, LayoutHistory>>({})
+  const [state, dispatch] = useReducer(reducer, undefined, createInitialState);
 
-  const activeProject = useMemo(
-    () => projectsState.projects.find((project) => project.id === projectsState.activeProjectId) ?? null,
-    [projectsState.projects, projectsState.activeProjectId],
-  )
+  // Debounced localStorage persistence (300ms) to avoid hammering during rapid edits
+  const isFirstRender = useRef(true);
+  const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (isFirstRender.current) {
+      isFirstRender.current = false;
+      return;
+    }
+    if (persistTimerRef.current) {
+      clearTimeout(persistTimerRef.current);
+    }
+    persistTimerRef.current = setTimeout(() => {
+      try {
+        const toStore: ProjectsState = {
+          projects: state.projects,
+          activeProjectId: state.activeProjectId,
+        };
+        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(toStore));
+      } catch (error) {
+        console.warn('Unable to persist projects to localStorage', error);
+      }
+    }, 300);
+    return () => {
+      if (persistTimerRef.current) {
+        clearTimeout(persistTimerRef.current);
+      }
+    };
+  }, [state.projects, state.activeProjectId]);
 
-  const activeHistory = projectsState.activeProjectId
-    ? historyMap[projectsState.activeProjectId] ?? { undoStack: [], redoStack: [] }
-    : { undoStack: [], redoStack: [] }
+  const projectsState: ProjectsState = useMemo(
+    () => ({ projects: state.projects, activeProjectId: state.activeProjectId }),
+    [state.projects, state.activeProjectId]
+  );
 
-  const canUndo = activeHistory.undoStack.length > 0
-  const canRedo = activeHistory.redoStack.length > 0
+  const activeProject = useMemo(() => getActiveProject(state), [state]);
 
-  const pushHistoryEntry = useCallback(
-    (projectId: string, layout: LayoutState) => {
-      setHistoryMap((previous) => {
-        const previousEntry = previous[projectId]
-        const nextUndo = [cloneLayoutState(layout), ...(previousEntry?.undoStack ?? [])].slice(0, MAX_HISTORY_ENTRIES)
-        return {
-          ...previous,
-          [projectId]: {
-            undoStack: nextUndo,
-            redoStack: [],
-          },
-        }
-      })
-    },
-    [setHistoryMap],
-  )
+  const activeHistory = state.activeProjectId
+    ? getHistory(state, state.activeProjectId)
+    : emptyHistory;
+  const canUndo = activeHistory.undoStack.length > 0;
+  const canRedo = activeHistory.redoStack.length > 0;
 
   const updateActiveProjectLayout = useCallback(
     (updater: (layout: LayoutState) => LayoutState, options?: { recordHistory?: boolean }) => {
-      setProjectsState((previous) => {
-        if (!previous.activeProjectId) {
-          return previous
-        }
-
-        const activeId = previous.activeProjectId
-        const currentProject = previous.projects.find((p) => p.id === activeId)
-
-        if (!currentProject) {
-          return previous
-        }
-
-        // Record history BEFORE the update if requested (default true)
-        if (options?.recordHistory !== false) {
-          // We need to side-effect the history update here because we need the *current* state
-          // before it's overwritten. This is safe because setHistoryMap uses its own functional update
-          // and doesn't depend on the render cycle for this specific value.
-          pushHistoryEntry(activeId, currentProject.layout)
-        }
-
-        const updatedProjects = previous.projects.map((project) => {
-          if (project.id !== activeId) {
-            return project
-          }
-
-          return {
-            ...project,
-            layout: updater(project.layout),
-            updatedAt: new Date().toISOString(),
-          }
-        })
-
-        return {
-          ...previous,
-          projects: updatedProjects,
-        }
-      })
+      dispatch({
+        type: 'UPDATE_LAYOUT',
+        updater,
+        recordHistory: options?.recordHistory !== false,
+      });
     },
-    [pushHistoryEntry, setProjectsState],
-  )
+    []
+  );
 
-  const replaceActiveProjectLayout = useCallback(
-    (layout: LayoutState) => {
-      const nextLayout = cloneLayoutState(layout)
-      setProjectsState((previous) => {
-        if (!previous.activeProjectId) {
-          return previous
-        }
-
-        const updatedProjects = previous.projects.map((project) =>
-          project.id === previous.activeProjectId
-            ? { ...project, layout: nextLayout, updatedAt: new Date().toISOString() }
-            : project,
-        )
-
-        return {
-          ...previous,
-          projects: updatedProjects,
-        }
-      })
-    },
-    [setProjectsState],
-  )
-
-  const undo = useCallback(() => {
-    const projectId = projectsState.activeProjectId
-    const currentLayout = activeProject?.layout
-    if (!projectId || !currentLayout) {
-      return
-    }
-
-    const layoutForRedo = cloneLayoutState(currentLayout)
-    setHistoryMap((previous) => {
-      const history = previous[projectId]
-      if (!history || history.undoStack.length === 0) {
-        return previous
-      }
-
-      const [latest, ...remainingUndo] = history.undoStack
-      replaceActiveProjectLayout(latest)
-
-      const nextRedo = [layoutForRedo, ...history.redoStack].slice(0, MAX_HISTORY_ENTRIES)
-      return {
-        ...previous,
-        [projectId]: {
-          undoStack: remainingUndo,
-          redoStack: nextRedo,
-        },
-      }
-    })
-  }, [projectsState.activeProjectId, activeProject?.layout, replaceActiveProjectLayout])
-
-  const redo = useCallback(() => {
-    const projectId = projectsState.activeProjectId
-    const currentLayout = activeProject?.layout
-    if (!projectId || !currentLayout) {
-      return
-    }
-
-    const layoutForUndo = cloneLayoutState(currentLayout)
-    setHistoryMap((previous) => {
-      const history = previous[projectId]
-      if (!history || history.redoStack.length === 0) {
-        return previous
-      }
-
-      const [nextEntry, ...remainingRedo] = history.redoStack
-      replaceActiveProjectLayout(nextEntry)
-
-      const nextUndo = [layoutForUndo, ...history.undoStack].slice(0, MAX_HISTORY_ENTRIES)
-      return {
-        ...previous,
-        [projectId]: {
-          undoStack: nextUndo,
-          redoStack: remainingRedo,
-        },
-      }
-    })
-  }, [projectsState.activeProjectId, activeProject?.layout, replaceActiveProjectLayout])
+  const undo = useCallback(() => dispatch({ type: 'UNDO' }), []);
+  const redo = useCallback(() => dispatch({ type: 'REDO' }), []);
 
   const setActiveProjectId = useCallback(
-    (id: string) =>
-      setProjectsState((previous) => ({
-        ...previous,
-        activeProjectId: id,
-      })),
-    [setProjectsState],
-  )
+    (id: string) => dispatch({ type: 'SET_ACTIVE_PROJECT', id }),
+    []
+  );
 
   const createProject = useCallback(() => {
-    setProjectsState((previous) => {
-      const nextProject = createNewProject(`Project ${previous.projects.length + 1}`, createDefaultLayoutState())
-      setHistoryMap((historyPrevious) => ({
-        ...historyPrevious,
-        [nextProject.id]: { undoStack: [], redoStack: [] },
-      }))
+    const project = createNewProject(
+      `Project ${state.projects.length + 1}`,
+      createDefaultLayoutState()
+    );
+    dispatch({ type: 'CREATE_PROJECT', project });
+  }, [state.projects.length]);
 
-      return {
-        projects: [...previous.projects, nextProject],
-        activeProjectId: nextProject.id,
-      }
-    })
-  }, [setProjectsState, setHistoryMap])
-
-  const addImportedProject = useCallback(
-    (imported: ProjectImportData) => {
-      const baseProject = createNewProject(imported.name, imported.layout)
-      const importedProject: Project = {
-        ...baseProject,
-        name: imported.name,
-        createdAt: imported.createdAt ?? baseProject.createdAt,
-        updatedAt: new Date().toISOString(),
-        layout: baseProject.layout,
-      }
-
-      setProjectsState((previous) => ({
-        ...previous,
-        projects: [...previous.projects, importedProject],
-        activeProjectId: importedProject.id,
-      }))
-
-      setHistoryMap((historyPrevious) => ({
-        ...historyPrevious,
-        [importedProject.id]: { undoStack: [], redoStack: [] },
-      }))
-    },
-    [setProjectsState, setHistoryMap],
-  )
+  const addImportedProject = useCallback((imported: ProjectImportData) => {
+    const baseProject = createNewProject(imported.name, imported.layout);
+    const project: Project = {
+      ...baseProject,
+      name: imported.name,
+      createdAt: imported.createdAt ?? baseProject.createdAt,
+      updatedAt: new Date().toISOString(),
+      layout: baseProject.layout,
+    };
+    dispatch({ type: 'ADD_IMPORTED_PROJECT', project });
+  }, []);
 
   const renameProject = useCallback(
-    (id: string, newName: string) => {
-      setProjectsState((previous) => ({
-        ...previous,
-        projects: previous.projects.map((project) =>
-          project.id === id
-            ? {
-              ...project,
-              name: newName,
-              updatedAt: new Date().toISOString(),
-            }
-            : project,
-        ),
-      }))
-    },
-    [setProjectsState],
-  )
+    (id: string, newName: string) => dispatch({ type: 'RENAME_PROJECT', id, name: newName }),
+    []
+  );
 
-  const deleteProject = useCallback(
-    (id: string) => {
-      setProjectsState((previous) => {
-        const remaining = previous.projects.filter((project) => project.id !== id)
-        const nextActive =
-          previous.activeProjectId === id ? remaining[0]?.id ?? null : previous.activeProjectId
-
-        return {
-          ...previous,
-          projects: remaining,
-          activeProjectId: nextActive,
-        }
-      })
-
-      setHistoryMap((previous) => {
-        if (!previous[id]) {
-          return previous
-        }
-        const next = { ...previous }
-        delete next[id]
-        return next
-      })
-    },
-    [setProjectsState, setHistoryMap],
-  )
+  const deleteProject = useCallback((id: string) => dispatch({ type: 'DELETE_PROJECT', id }), []);
 
   const reloadFromLocalStorage = useCallback(() => {
-    if (typeof window === 'undefined') {
-      return
+    const stored = readStoredState();
+    if (stored) {
+      dispatch({ type: 'RELOAD', state: stored });
     }
-
-    try {
-      const stored = window.localStorage.getItem(STORAGE_KEY)
-      if (!stored) {
-        return
-      }
-
-      const parsed = JSON.parse(stored) as ProjectsState
-      setHistoryMap({})
-      setProjectsState(parsed)
-    } catch (error) {
-      console.warn('Unable to reload projects from localStorage', error)
-    }
-  }, [setProjectsState, setHistoryMap])
+  }, []);
 
   return {
     projectsState,
@@ -312,5 +342,5 @@ export function useProjectsState() {
     setActiveProjectId,
     undo,
     updateActiveProjectLayout,
-  }
+  };
 }
