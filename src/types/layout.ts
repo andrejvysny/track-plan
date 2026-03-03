@@ -1,84 +1,86 @@
-import type { EndpointRef, TrackSystemDefinition } from './trackSystem'
+import type { EndpointRef, TrackSystemDefinition } from './trackSystem';
 
 export interface PlacedItem {
   /** Unique instance identifier (e.g. uuid) */
-  id: string
-  trackSystemId: string
-  componentId: string
-  x: number
-  y: number
-  rotationDeg: number
-  isGrounded?: boolean
+  id: string;
+  trackSystemId: string;
+  componentId: string;
+  x: number;
+  y: number;
+  rotationDeg: number;
+  isGrounded?: boolean;
+  elevationStartMm?: number;
+  elevationEndMm?: number;
 }
 
 export interface LayoutState {
   /** Tracks which system the UI should render as active */
-  activeTrackSystemId: string | null
+  activeTrackSystemId: string | null;
   /** Pool of available track systems */
-  trackSystems: TrackSystemDefinition[]
+  trackSystems: TrackSystemDefinition[];
   /** Instances placed on the canvas */
-  placedItems: PlacedItem[]
+  placedItems: PlacedItem[];
   /** Tracks currently connected endpoints */
-  connections: EndpointConnection[]
+  connections: EndpointConnection[];
   /** Simple shapes drawn on the canvas */
-  shapes: CanvasShape[]
+  shapes: CanvasShape[];
 }
 
 export interface EndpointConnection {
-  endpoints: [EndpointRef, EndpointRef]
+  endpoints: [EndpointRef, EndpointRef];
 }
 
-export type ShapeType = 'rectangle' | 'circle' | 'text' | 'dimension'
+export type ShapeType = 'rectangle' | 'circle' | 'text' | 'dimension';
 
 export type CanvasPrimitiveShape = {
   /** Unique instance identifier (e.g. uuid) */
-  id: string
+  id: string;
   /** Type of primitive shape: rectangle or circle */
-  type: 'rectangle' | 'circle'
+  type: 'rectangle' | 'circle';
   /** Center X coordinate in mm */
-  x: number
+  x: number;
   /** Center Y coordinate in mm */
-  y: number
+  y: number;
   /** Width in mm (for rectangle) or diameter in mm (for circle) */
-  width: number
+  width: number;
   /** Height in mm (for rectangle only) */
-  height?: number
+  height?: number;
   /** Rotation in degrees */
-  rotationDeg: number
-}
+  rotationDeg: number;
+};
 
 export type CanvasTextShape = {
-  id: string
-  type: 'text'
-  x: number
-  y: number
+  id: string;
+  type: 'text';
+  x: number;
+  y: number;
   /** The text content to render */
-  text: string
+  text: string;
   /** Font size in mm */
-  fontSize: number
+  fontSize: number;
   /** Width of the text area in mm */
-  width: number
+  width: number;
   /** Height of the text area in mm */
-  height: number
-  rotationDeg: number
-}
+  height: number;
+  rotationDeg: number;
+};
 
 export type CanvasDimensionShape = {
-  id: string
-  type: 'dimension'
+  id: string;
+  type: 'dimension';
   /** Center of the measured span */
-  x: number
-  y: number
+  x: number;
+  y: number;
   /** Length of the measured span in mm */
-  length: number
+  length: number;
   /** Dimension line rotation (aligned with the measured span) */
-  rotationDeg: number
+  rotationDeg: number;
   /** Perpendicular offset of the dimension line from the measured points */
-  offsetMm: number
+  offsetMm: number;
   /** Optional custom label; when absent, the length is shown */
-  label?: string
-}
+  label?: string;
+};
 
-export type CanvasShape = CanvasPrimitiveShape | CanvasTextShape | CanvasDimensionShape
+export type CanvasShape = CanvasPrimitiveShape | CanvasTextShape | CanvasDimensionShape;
 
 /** LayoutState is intentionally generic right now; future phases will extend it with connectors, grid settings, etc. */

@@ -1,5 +1,5 @@
 import type { ChangeEventHandler } from 'react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { TrackComponentDefinition, TrackComponentType } from './types/trackSystem';
 import { pikoA_H0 } from './data/pikoA_H0';
 import { Canvas, type CanvasHandle } from './components/Layout/Canvas';
@@ -17,6 +17,9 @@ import { TRACK_COMPONENT_TYPES } from './constants/trackUsage';
 import type { TrackUsageComponentCount, TrackUsageSummary } from './types/trackUsage';
 import { connectionMatchesEndpoints } from './utils/connectionUtils';
 import { buildProjectExport, parseProjectImport } from './utils/projectSerialization';
+import { propagateElevation } from './utils/elevationUtils';
+
+const Canvas3D = lazy(() => import('./components/Layout/Canvas3D'));
 
 function App() {
   const {
@@ -43,6 +46,7 @@ function App() {
   const [debugMode, setDebugMode] = useState(false);
   const [showColors, setShowColors] = useState(true);
   const [drawingTool, setDrawingTool] = useState<ShapeType | null>(null);
+  const [viewMode, setViewMode] = useState<'2d' | '3d'>('2d');
 
   const activeTrackSystem = useMemo(() => {
     const system =
@@ -365,6 +369,24 @@ function App() {
     }));
   };
 
+  const handleUpdateElevation = useCallback(
+    (itemId: string, startMm: number, endMm: number) => {
+      if (!activeLayout) return;
+
+      // Apply elevation and propagate through connected graph
+      const updatedStart = propagateElevation(activeLayout, itemId, 'start', startMm);
+      // Build a temporary layout with start propagated, then propagate end
+      const tempLayout = { ...activeLayout, placedItems: updatedStart };
+      const updatedBoth = propagateElevation(tempLayout, itemId, 'end', endMm);
+
+      updateActiveProjectLayout((layout) => ({
+        ...layout,
+        placedItems: updatedBoth,
+      }));
+    },
+    [activeLayout, updateActiveProjectLayout]
+  );
+
   const canRotateSelection =
     selectedItemIds.size > 0 && !selectedItemsConnected && !isSelectionGrounded;
   // Note: Shape deletion is handled internally by Canvas, so we only check for item selection here
@@ -415,6 +437,8 @@ function App() {
         drawingTool={drawingTool}
         onDrawingToolChange={setDrawingTool}
         onDimensionAction={handleDimensionAction}
+        viewMode={viewMode}
+        onToggleViewMode={() => setViewMode((m) => (m === '2d' ? '3d' : '2d'))}
       />
 
       <input
@@ -436,19 +460,37 @@ function App() {
         />
 
         <div className="flex flex-1 overflow-hidden">
-          <Canvas
-            ref={canvasRef}
-            layout={activeLayout}
-            trackSystem={activeTrackSystem}
-            onUpdateLayout={updateActiveProjectLayout}
-            onSelectionChange={(ids) => setSelectedItemIds(new Set(ids))}
-            onSelectedEndpointsChange={setSelectedEndpoints}
-            debugMode={debugMode}
-            showColors={showColors}
-            drawingTool={drawingTool}
-            undo={undo}
-            redo={redo}
-          />
+          {viewMode === '2d' ? (
+            <Canvas
+              ref={canvasRef}
+              layout={activeLayout}
+              trackSystem={activeTrackSystem}
+              onUpdateLayout={updateActiveProjectLayout}
+              onSelectionChange={(ids) => setSelectedItemIds(new Set(ids))}
+              onSelectedEndpointsChange={setSelectedEndpoints}
+              debugMode={debugMode}
+              showColors={showColors}
+              drawingTool={drawingTool}
+              undo={undo}
+              redo={redo}
+            />
+          ) : (
+            <Suspense
+              fallback={
+                <div className="flex flex-1 items-center justify-center text-slate-400">
+                  Loading 3D view...
+                </div>
+              }
+            >
+              <Canvas3D
+                layout={activeLayout}
+                trackSystem={activeTrackSystem}
+                selectedItemIds={selectedItemIds}
+                onSelectionChange={(ids) => setSelectedItemIds(new Set(ids))}
+                onUpdateElevation={handleUpdateElevation}
+              />
+            </Suspense>
+          )}
         </div>
 
         <ComponentsSidebar

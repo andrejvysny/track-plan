@@ -1,39 +1,41 @@
-import type { Project } from '../../types/project'
-import type { ShapeType } from '../../types/layout'
-import { Undo, Redo } from 'lucide-react'
+import type { Project } from '../../types/project';
+import type { ShapeType } from '../../types/layout';
+import { Undo, Redo } from 'lucide-react';
 
 interface TopToolbarProps {
-  activeProject: Project | null
-  onNewProject: () => void
-  onReload: () => void
-  onResetLayout: () => void
-  onExportSvg: () => void
-  onExportJson: () => void
-  onImport: () => void
-  onConnectEndpoints: () => void
-  onDisconnectEndpoints: () => void
-  onRotateSelectedLeft: () => void
-  onRotateSelectedRight: () => void
-  onDeleteSelected: () => void
-  onToggleGrounded: () => void
-  onUndo: () => void
-  onRedo: () => void
-  onToggleDebug: () => void
-  canConnectEndpoints: boolean
-  canDisconnectEndpoints: boolean
-  canRotateSelection: boolean
-  canDeleteSelection: boolean
-  canUndo: boolean
-  canRedo: boolean
-  canToggleGroundSelection: boolean
-  isSelectionGrounded: boolean
-  canExportProject: boolean
-  debugMode: boolean
-  showColors: boolean
-  onToggleColors: () => void
-  drawingTool: ShapeType | null
-  onDrawingToolChange: (tool: ShapeType | null) => void
-  onDimensionAction?: (type: 'center' | 'inner' | 'outer') => boolean
+  activeProject: Project | null;
+  onNewProject: () => void;
+  onReload: () => void;
+  onResetLayout: () => void;
+  onExportSvg: () => void;
+  onExportJson: () => void;
+  onImport: () => void;
+  onConnectEndpoints: () => void;
+  onDisconnectEndpoints: () => void;
+  onRotateSelectedLeft: () => void;
+  onRotateSelectedRight: () => void;
+  onDeleteSelected: () => void;
+  onToggleGrounded: () => void;
+  onUndo: () => void;
+  onRedo: () => void;
+  onToggleDebug: () => void;
+  canConnectEndpoints: boolean;
+  canDisconnectEndpoints: boolean;
+  canRotateSelection: boolean;
+  canDeleteSelection: boolean;
+  canUndo: boolean;
+  canRedo: boolean;
+  canToggleGroundSelection: boolean;
+  isSelectionGrounded: boolean;
+  canExportProject: boolean;
+  debugMode: boolean;
+  showColors: boolean;
+  onToggleColors: () => void;
+  drawingTool: ShapeType | null;
+  onDrawingToolChange: (tool: ShapeType | null) => void;
+  onDimensionAction?: (type: 'center' | 'inner' | 'outer') => boolean;
+  viewMode: '2d' | '3d';
+  onToggleViewMode: () => void;
 }
 
 export function TopToolbar({
@@ -68,26 +70,29 @@ export function TopToolbar({
   drawingTool,
   onDrawingToolChange,
   onDimensionAction,
+  viewMode,
+  onToggleViewMode,
 }: TopToolbarProps) {
   const baseControlStyles =
-    'rounded border px-2 py-1 font-semibold transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2'
+    'rounded border px-2 py-1 font-semibold transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2';
   const accentButton =
-    'border-blue-500/60 bg-blue-500/10 text-blue-200 hover:border-blue-400 hover:bg-blue-500/20 disabled:border-slate-800 disabled:bg-slate-900/70 disabled:text-slate-600'
+    'border-blue-500/60 bg-blue-500/10 text-blue-200 hover:border-blue-400 hover:bg-blue-500/20 disabled:border-slate-800 disabled:bg-slate-900/70 disabled:text-slate-600';
   const dangerButton =
-    'border-red-500/60 bg-red-500/10 text-red-300 hover:border-red-400 hover:bg-red-500/20 disabled:border-slate-800 disabled:bg-slate-900/70 disabled:text-slate-600'
+    'border-red-500/60 bg-red-500/10 text-red-300 hover:border-red-400 hover:bg-red-500/20 disabled:border-slate-800 disabled:bg-slate-900/70 disabled:text-slate-600';
   const rotateButton =
-    'border-slate-800 bg-slate-900 text-slate-100 hover:border-slate-600 hover:bg-slate-800 disabled:border-slate-800 disabled:bg-slate-900/70 disabled:text-slate-600'
+    'border-slate-800 bg-slate-900 text-slate-100 hover:border-slate-600 hover:bg-slate-800 disabled:border-slate-800 disabled:bg-slate-900/70 disabled:text-slate-600';
   const groundButton =
-    'border-amber-500/60 bg-amber-500/10 text-amber-300 hover:border-amber-400 hover:bg-amber-500/20 disabled:border-slate-800 disabled:bg-slate-900/70 disabled:text-slate-600'
+    'border-amber-500/60 bg-amber-500/10 text-amber-300 hover:border-amber-400 hover:bg-amber-500/20 disabled:border-slate-800 disabled:bg-slate-900/70 disabled:text-slate-600';
   const debugButton =
-    'border-purple-500/60 bg-purple-500/10 text-purple-300 hover:border-purple-400 hover:bg-purple-500/20'
+    'border-purple-500/60 bg-purple-500/10 text-purple-300 hover:border-purple-400 hover:bg-purple-500/20';
   const shapeButton =
-    'border-green-500/60 bg-green-500/10 text-green-300 hover:border-green-400 hover:bg-green-500/20'
+    'border-green-500/60 bg-green-500/10 text-green-300 hover:border-green-400 hover:bg-green-500/20';
   const shapeButtonActive =
-    'border-green-400 bg-green-500/30 text-green-200 hover:border-green-300 hover:bg-green-500/40'
-  const iconButton = 'rounded border border-slate-800 bg-slate-900 p-2 text-slate-100 transition hover:border-slate-600 hover:bg-slate-800 hover:text-slate-100'
+    'border-green-400 bg-green-500/30 text-green-200 hover:border-green-300 hover:bg-green-500/40';
+  const iconButton =
+    'rounded border border-slate-800 bg-slate-900 p-2 text-slate-100 transition hover:border-slate-600 hover:bg-slate-800 hover:text-slate-100';
   const neutralButton =
-    'border-slate-800 bg-slate-900 text-slate-100 hover:border-slate-600 hover:bg-slate-800 hover:text-slate-100 disabled:border-slate-800 disabled:bg-slate-900/70 disabled:text-slate-600'
+    'border-slate-800 bg-slate-900 text-slate-100 hover:border-slate-600 hover:bg-slate-800 hover:text-slate-100 disabled:border-slate-800 disabled:bg-slate-900/70 disabled:text-slate-600';
   return (
     <header className="toolbar-top flex h-12 items-center justify-between border-b border-slate-800 bg-slate-950 px-4 text-slate-100">
       <div>
@@ -95,7 +100,6 @@ export function TopToolbar({
         <p className="text-xs text-slate-400">
           {activeProject ? `Project • ${activeProject.name}` : 'No project selected'}
         </p>
-
       </div>
       <div className="flex flex-1 items-center justify-between gap-4 text-xs">
         <div className="flex items-center gap-3">
@@ -150,9 +154,9 @@ export function TopToolbar({
               type="button"
               onClick={() => {
                 if (onDimensionAction && onDimensionAction('center')) {
-                  return
+                  return;
                 }
-                onDrawingToolChange(drawingTool === 'dimension' ? null : 'dimension')
+                onDrawingToolChange(drawingTool === 'dimension' ? null : 'dimension');
               }}
               className={`${baseControlStyles} ${drawingTool === 'dimension' ? shapeButtonActive : shapeButton}`}
               title="Center to Center (or Draw Custom)"
@@ -232,6 +236,14 @@ export function TopToolbar({
         <div className="flex items-center gap-3">
           <button
             type="button"
+            onClick={onToggleViewMode}
+            className={`${baseControlStyles} ${viewMode === '3d' ? 'border-cyan-400 bg-cyan-500/30 text-cyan-200' : 'border-cyan-500/60 bg-cyan-500/10 text-cyan-300 hover:border-cyan-400 hover:bg-cyan-500/20'}`}
+            title="Toggle 2D/3D view"
+          >
+            {viewMode === '2d' ? '3D' : '2D'}
+          </button>
+          <button
+            type="button"
             onClick={onToggleDebug}
             className={`${baseControlStyles} ${debugButton} ${debugMode ? 'border-purple-400 bg-purple-500/30' : ''}`}
           >
@@ -270,5 +282,5 @@ export function TopToolbar({
         </div>
       </div>
     </header>
-  )
+  );
 }
