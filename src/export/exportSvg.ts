@@ -30,6 +30,8 @@ import {
   isDimensionShape,
   listConnectorEntries,
   estimateTextWidth,
+  boardPathD,
+  boardVertices,
 } from '../utils/shapeGeometry';
 
 const EXPORT_BLACK = '#000';
@@ -206,6 +208,16 @@ const getShapeBounds = (shape: CanvasShape): Bounds => {
     return expandBounds(pointsToBounds(points), SHAPE_STROKE_WIDTH / 2);
   }
 
+  if (shape.type === 'line') {
+    return expandBounds(
+      pointsToBounds([
+        { x: shape.x1, y: shape.y1 },
+        { x: shape.x2, y: shape.y2 },
+      ]),
+      SHAPE_STROKE_WIDTH / 2
+    );
+  }
+
   if (shape.type === 'circle') {
     const radius = shape.width / 2;
     const bounds: Bounds = {
@@ -258,6 +270,10 @@ const getShapeBounds = (shape: CanvasShape): Bounds => {
 };
 
 const buildShapeElement = (shape: CanvasShape) => {
+  if (shape.type === 'line') {
+    return `<line x1="${shape.x1}" y1="${shape.y1}" x2="${shape.x2}" y2="${shape.y2}" stroke="${EXPORT_BLACK}" stroke-width="${SHAPE_STROKE_WIDTH}" stroke-linecap="round"/>`;
+  }
+
   const rotationTransform = `rotate(${shape.rotationDeg} ${shape.x} ${shape.y})`;
   const shapeType = shape.type;
 
@@ -323,7 +339,18 @@ export function buildLayoutSvgString(
 
   const trackElements: string[] = [];
   const shapeElements: string[] = [];
+  const baseplaneElements: string[] = [];
   let bounds: Bounds | null = null;
+
+  layout.basePlane?.boards.forEach((board) => {
+    baseplaneElements.push(
+      `<path d="${boardPathD(board)}" fill="none" stroke="${EXPORT_BLACK}" stroke-width="${SHAPE_STROKE_WIDTH}" stroke-dasharray="14 8"/>`
+    );
+    bounds = mergeBounds(
+      bounds,
+      expandBounds(pointsToBounds(boardVertices(board)), SHAPE_STROKE_WIDTH / 2)
+    );
+  });
 
   layout.placedItems.forEach((item) => {
     const component = componentMap.get(item.componentId);
@@ -392,6 +419,7 @@ export function buildLayoutSvgString(
 
   const content = [
     canvasOutline,
+    ...baseplaneElements,
     ...trackElements,
     ...shapeElements,
     trackUsageList,

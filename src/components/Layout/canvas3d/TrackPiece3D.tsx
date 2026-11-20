@@ -1,6 +1,6 @@
-import { useMemo, useCallback } from 'react';
+import { useMemo, useCallback, useEffect } from 'react';
 import * as THREE from 'three';
-import { Outlines, Html } from '@react-three/drei';
+import { Html } from '@react-three/drei';
 import type { PlacedItem } from '../../../types/layout';
 import type { TrackComponentDefinition } from '../../../types/trackSystem';
 import { getCachedTrackGeometry } from '../../../geometry/trackGeometryCache3D';
@@ -11,7 +11,15 @@ import { toRad } from '../../../geometry/geometryUtils';
 const railMaterial = new THREE.MeshStandardMaterial({
   color: 0x888888,
   metalness: 0.8,
+  roughness: 0.35,
+});
+
+const selectedRailMaterial = new THREE.MeshStandardMaterial({
+  color: 0x8f98a3,
+  metalness: 0.8,
   roughness: 0.3,
+  emissive: 0x0ea5e9,
+  emissiveIntensity: 0.55,
 });
 
 const RAIL_RADIUS_MM = 1.5;
@@ -32,19 +40,19 @@ export function TrackPiece3D({ item, componentDef, isSelected, onClick }: TrackP
     [item.id, onClick]
   );
 
-  const rails = useMemo(() => {
+  const railResult = useMemo(() => {
     const cached = getCachedTrackGeometry(componentDef);
-    const startMm = item.elevationStartMm ?? 0;
-    const endMm = item.elevationEndMm ?? 0;
-    const hasElevation = startMm !== 0 || endMm !== 0;
+    const connectorElevationsMm = item.connectorElevationsMm;
+    const hasElevation =
+      connectorElevationsMm !== undefined &&
+      Object.values(connectorElevationsMm).some((value) => Math.abs(value) > 1e-6);
 
     if (!hasElevation) {
-      return cached.railGeometries;
+      return { geometries: cached.railGeometries, generated: false };
     }
 
-    // Clone curves, apply elevation, regenerate tube geometries
-    const elevated = applyElevationToCurves(cached.curves, startMm, endMm);
-    return elevated
+    const elevated = applyElevationToCurves(cached.curves, connectorElevationsMm);
+    const geometries = elevated
       .map((curve) => {
         const tubularSegments = Math.max(8, Math.ceil(curve.lengthMm / 5));
         return [
@@ -53,22 +61,57 @@ export function TrackPiece3D({ item, componentDef, isSelected, onClick }: TrackP
         ];
       })
       .flat();
-  }, [componentDef, item.elevationStartMm, item.elevationEndMm]);
 
-  // Grade label for elevated tracks
+    return { geometries, generated: true };
+  }, [componentDef, item.connectorElevationsMm]);
+
+  useEffect(() => {
+    return () => {
+      if (!railResult.generated) {
+        return;
+      }
+      for (const geometry of railResult.geometries) {
+        geometry.dispose();
+      }
+    };
+  }, [railResult]);
+
   const gradeInfo = useMemo(() => {
-    const startMm = item.elevationStartMm ?? 0;
-    const endMm = item.elevationEndMm ?? 0;
-    if (startMm === 0 && endMm === 0) return null;
+    if (!isSelected) return [];
+    const connectorElevationsMm = item.connectorElevationsMm;
+    if (!connectorElevationsMm || Object.keys(connectorElevationsMm).length === 0) {
+      return [];
+    }
 
     const cached = getCachedTrackGeometry(componentDef);
-    const totalLength = cached.curves.reduce((sum, c) => sum + c.lengthMm, 0);
-    if (totalLength === 0) return null;
+    const seen = new Set<string>();
+    const result: { key: string; grade: number; midY: number }[] = [];
 
-    const grade = ((endMm - startMm) / totalLength) * 100;
-    const midY = (startMm + endMm) / 2;
-    return { grade, midY };
-  }, [componentDef, item.elevationStartMm, item.elevationEndMm]);
+    for (const curve of cached.curves) {
+      if (!curve.startConnectorKey || !curve.endConnectorKey || curve.lengthMm <= 1e-6) {
+        continue;
+      }
+      const routeKey = `${curve.startConnectorKey}->${curve.endConnectorKey}`;
+      if (seen.has(routeKey)) {
+        continue;
+      }
+      seen.add(routeKey);
+
+      const yStart = connectorElevationsMm[curve.startConnectorKey] ?? 0;
+      const yEnd = connectorElevationsMm[curve.endConnectorKey] ?? 0;
+      if (Math.abs(yStart) <= 1e-6 && Math.abs(yEnd) <= 1e-6) {
+        continue;
+      }
+
+      result.push({
+        key: routeKey,
+        grade: ((yEnd - yStart) / curve.lengthMm) * 100,
+        midY: (yStart + yEnd) / 2,
+      });
+    }
+
+    return result.slice(0, 2);
+  }, [componentDef, isSelected, item.connectorElevationsMm]);
 
   return (
     <group
@@ -76,16 +119,25 @@ export function TrackPiece3D({ item, componentDef, isSelected, onClick }: TrackP
       rotation={[0, -toRad(item.rotationDeg), 0]}
       onClick={handleClick}
     >
-      {rails.map((geometry, i) => (
-        <mesh key={i} geometry={geometry} material={railMaterial}>
-          {isSelected && <Outlines thickness={2} screenspace color="#38bdf8" />}
-        </mesh>
+      {railResult.geometries.map((geometry, i) => (
+        <mesh
+          key={i}
+          geometry={geometry}
+          material={isSelected ? selectedRailMaterial : railMaterial}
+        />
       ))}
-      {gradeInfo && (
-        <Html position={[0, gradeInfo.midY + 8, 0]} center distanceFactor={200}>
-          <span className="text-[9px] text-amber-300">{gradeInfo.grade.toFixed(1)}%</span>
+      {gradeInfo.map((entry, index) => (
+        <Html
+          key={entry.key}
+          position={[0, entry.midY + 8 + index * 8, 0]}
+          center
+          distanceFactor={220}
+        >
+          <span className="pointer-events-none text-[9px] text-amber-300">
+            {entry.grade.toFixed(1)}%
+          </span>
         </Html>
-      )}
+      ))}
     </group>
   );
 }

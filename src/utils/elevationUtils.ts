@@ -1,5 +1,27 @@
 import type { LayoutState, PlacedItem, EndpointConnection } from '../types/layout';
 
+const ELEVATION_EPSILON = 1e-6;
+
+export function getConnectorElevationMm(item: PlacedItem, connectorKey: string): number {
+  return item.connectorElevationsMm?.[connectorKey] ?? 0;
+}
+
+export function setConnectorElevationMm(
+  item: PlacedItem,
+  connectorKey: string,
+  elevationMm: number
+): void {
+  const current = item.connectorElevationsMm ?? {};
+  const next = { ...current };
+  if (Math.abs(elevationMm) <= ELEVATION_EPSILON) {
+    delete next[connectorKey];
+  } else {
+    next[connectorKey] = elevationMm;
+  }
+
+  item.connectorElevationsMm = Object.keys(next).length > 0 ? next : undefined;
+}
+
 /**
  * Propagate elevation from a changed item through connected endpoints.
  * BFS through the connection graph — connected endpoints share elevation values.
@@ -7,7 +29,7 @@ import type { LayoutState, PlacedItem, EndpointConnection } from '../types/layou
 export function propagateElevation(
   layout: LayoutState,
   changedItemId: string,
-  changedKey: 'start' | 'end',
+  changedKey: string,
   newMm: number
 ): PlacedItem[] {
   const itemMap = new Map(layout.placedItems.map((item) => [item.id, { ...item }]));
@@ -15,11 +37,7 @@ export function propagateElevation(
   if (!changed) return layout.placedItems;
 
   // Apply the direct change
-  if (changedKey === 'start') {
-    changed.elevationStartMm = newMm;
-  } else {
-    changed.elevationEndMm = newMm;
-  }
+  setConnectorElevationMm(changed, changedKey, newMm);
 
   // BFS through connections
   const visited = new Set<string>();
@@ -45,11 +63,7 @@ export function propagateElevation(
       if (!peer) continue;
 
       // Set peer's elevation at the connected endpoint
-      if (match.connectorKey === 'start') {
-        peer.elevationStartMm = current.elevation;
-      } else if (match.connectorKey === 'end') {
-        peer.elevationEndMm = current.elevation;
-      }
+      setConnectorElevationMm(peer, match.connectorKey, current.elevation);
 
       queue.push({
         itemId: match.itemId,
@@ -60,6 +74,22 @@ export function propagateElevation(
   }
 
   return Array.from(itemMap.values());
+}
+
+export function propagateConnectorElevations(
+  layout: LayoutState,
+  itemId: string,
+  updates: Record<string, number>
+): PlacedItem[] {
+  let currentLayout = layout;
+  let placedItems = layout.placedItems;
+
+  for (const [connectorKey, elevationMm] of Object.entries(updates)) {
+    placedItems = propagateElevation(currentLayout, itemId, connectorKey, elevationMm);
+    currentLayout = { ...currentLayout, placedItems };
+  }
+
+  return placedItems;
 }
 
 function findMatchingEndpoint(

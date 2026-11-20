@@ -1,5 +1,5 @@
 import { memo } from 'react';
-import type { CanvasDimensionShape, ShapeType } from '../../../types/layout';
+import type { CanvasDimensionShape, DrawingTool } from '../../../types/layout';
 import { normalizeAngle } from '../../../geometry/trackGeometry';
 import { getDimensionGeometry, formatDimensionLabel } from '../../../utils/shapeGeometry';
 import { estimateTextWidth as estimateTextWidthShared } from '../../../utils/shapeGeometry';
@@ -37,8 +37,49 @@ const computeTextDimensions = (dx: number, dy: number, enforceSquare: boolean) =
   return { width, height };
 };
 
+const BASE_PLANE_STROKE_COLOR = '#60a5fa';
+
+const PreviewLabel = ({
+  x,
+  y,
+  text,
+  color,
+}: {
+  x: number;
+  y: number;
+  text: string;
+  color: string;
+}) => {
+  const fontSize = 8;
+  const width = estimateTextWidth(text, fontSize) + DIMENSION_TEXT_PADDING_MM * 2;
+  const height = fontSize + DIMENSION_TEXT_PADDING_MM * 2;
+  return (
+    <g transform={`translate(${x} ${y})`} pointerEvents="none">
+      <rect
+        x={-width / 2}
+        y={-height / 2}
+        width={width}
+        height={height}
+        fill="rgba(15, 23, 42, 0.85)"
+        stroke={color}
+        strokeWidth={1}
+        rx={2}
+      />
+      <text
+        x={0}
+        y={fontSize / 3}
+        textAnchor="middle"
+        fontSize={fontSize}
+        className="fill-slate-100"
+      >
+        {text}
+      </text>
+    </g>
+  );
+};
+
 export type DrawingPreviewProps = {
-  drawingTool: ShapeType;
+  drawingTool: DrawingTool;
   drawStart: { x: number; y: number };
   drawCurrent: { x: number; y: number };
   drawShiftActive: boolean;
@@ -61,6 +102,41 @@ export const DrawingPreview = memo(function DrawingPreview({
     );
   }
 
+  if (drawingTool === 'line') {
+    let lx = dx;
+    let ly = dy;
+    if (drawShiftActive) {
+      if (Math.abs(lx) > Math.abs(ly)) ly = 0;
+      else lx = 0;
+    }
+    const endX = drawStart.x + lx;
+    const endY = drawStart.y + ly;
+    const length = Math.hypot(lx, ly);
+    return (
+      <g pointerEvents="none">
+        <line
+          x1={drawStart.x}
+          y1={drawStart.y}
+          x2={endX}
+          y2={endY}
+          stroke={SHAPE_STROKE_COLOR}
+          strokeWidth={SHAPE_STROKE_WIDTH}
+          strokeDasharray="4 4"
+          strokeLinecap="round"
+          opacity={0.8}
+        />
+        {length > 0.5 && (
+          <PreviewLabel
+            x={(drawStart.x + endX) / 2}
+            y={(drawStart.y + endY) / 2 - 10}
+            text={`${length.toFixed(1)} mm`}
+            color={SHAPE_STROKE_COLOR}
+          />
+        )}
+      </g>
+    );
+  }
+
   if (drawingTool === 'circle') {
     const radius = Math.hypot(dx, dy) / 2;
     return (
@@ -77,6 +153,7 @@ export const DrawingPreview = memo(function DrawingPreview({
     );
   }
 
+  const isBasePlane = drawingTool === 'basePlaneRect';
   const absDx = Math.abs(dx);
   const absDy = Math.abs(dy);
   const dimensions =
@@ -85,18 +162,30 @@ export const DrawingPreview = memo(function DrawingPreview({
       : computeRectangleDimensions(absDx, absDy, drawShiftActive);
   const halfWidth = dimensions.width / 2;
   const halfHeight = (dimensions.height ?? dimensions.width) / 2;
+  const color = isBasePlane ? BASE_PLANE_STROKE_COLOR : SHAPE_STROKE_COLOR;
+  const showDims = (drawingTool === 'rectangle' || isBasePlane) && (absDx > 0.5 || absDy > 0.5);
   return (
-    <rect
-      x={centerX - halfWidth}
-      y={centerY - halfHeight}
-      width={dimensions.width}
-      height={dimensions.height ?? dimensions.width}
-      fill="none"
-      stroke={SHAPE_STROKE_COLOR}
-      strokeWidth={SHAPE_STROKE_WIDTH}
-      strokeDasharray="4 4"
-      opacity={0.7}
-    />
+    <g pointerEvents="none">
+      <rect
+        x={centerX - halfWidth}
+        y={centerY - halfHeight}
+        width={dimensions.width}
+        height={dimensions.height ?? dimensions.width}
+        fill={isBasePlane ? 'rgba(96, 165, 250, 0.08)' : 'none'}
+        stroke={color}
+        strokeWidth={SHAPE_STROKE_WIDTH}
+        strokeDasharray="4 4"
+        opacity={0.8}
+      />
+      {showDims && (
+        <PreviewLabel
+          x={centerX}
+          y={centerY}
+          text={`${dimensions.width.toFixed(0)} × ${(dimensions.height ?? dimensions.width).toFixed(0)} mm`}
+          color={color}
+        />
+      )}
+    </g>
   );
 });
 

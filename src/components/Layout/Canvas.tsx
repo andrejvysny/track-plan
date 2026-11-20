@@ -11,20 +11,23 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react';
 import type {
+  BasePlaneBoard,
   CanvasDimensionShape,
+  CanvasLineShape,
   CanvasPrimitiveShape,
   CanvasShape,
   CanvasTextShape,
+  DrawingTool,
   EndpointConnection,
   LayoutState,
   PlacedItem,
-  ShapeType,
 } from '../../types/layout';
 import type {
   ConnectorKey,
   EndpointRef,
   TrackComponentDefinition,
   TrackSystemDefinition,
+  Vec2,
   WorldTransform,
 } from '../../types/trackSystem';
 import {
@@ -47,10 +50,22 @@ import {
   VIEWPORT_SIZE,
   SNAP_DISTANCE_MM,
   ANGLE_TOLERANCE_DEG,
+  SKETCH_SNAP_DISTANCE_MM,
+  SKETCH_MIN_LENGTH_MM,
+  POLYGON_CLOSE_DISTANCE_MM,
+  BASE_PLANE_DEFAULT_THICKNESS_MM,
+  BOARD_SNAP_DISTANCE_MM,
 } from '../../constants/layout';
 import {
-  isDimensionShape,
   listConnectorEntries as listConnectorEntriesFromGeometry,
+  projectPointToSegment,
+  boardVertices,
+  boardEdges,
+  boardPathD,
+  basePlaneBounds,
+  pointInBoards,
+  lineEndpoints,
+  lineLength,
 } from '../../utils/shapeGeometry';
 import { generateId } from '../../utils/idGenerator';
 import { TrackItemRenderer } from './canvas/TrackItemRenderer';
@@ -65,7 +80,7 @@ type CanvasProps = {
   onSelectedEndpointsChange?: (endpoints: EndpointRef[]) => void;
   debugMode?: boolean;
   showColors?: boolean;
-  drawingTool?: ShapeType | null;
+  drawingTool?: DrawingTool | null;
   undo: () => void;
   redo: () => void;
 };
@@ -104,6 +119,15 @@ const computeTextDimensions = (dx: number, dy: number, enforceSquare: boolean) =
 };
 
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
+
+const translateBoard = (board: BasePlaneBoard, dx: number, dy: number): BasePlaneBoard =>
+  board.kind === 'rect'
+    ? { ...board, x: board.x + dx, y: board.y + dy }
+    : { ...board, points: board.points.map((p) => ({ x: p.x + dx, y: p.y + dy })) };
+
+/** Constrain p to a horizontal/vertical (90°) offset from `last` — for ortho corners. */
+const orthoConstrain = (last: Vec2, p: Vec2): Vec2 =>
+  Math.abs(p.x - last.x) >= Math.abs(p.y - last.y) ? { x: p.x, y: last.y } : { x: last.x, y: p.y };
 
 const projectPointToRectanglePerimeter = (
   shape: CanvasPrimitiveShape,
@@ -206,6 +230,24 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   const editingTextIsNewRef = useRef(false);
   const textInputRef = useRef<HTMLDivElement | null>(null);
 
+  // Base-plane + sketch state
+  const [selectedBoardId, setSelectedBoardId] = useState<string | null>(null);
+  const [draggingBoardId, setDraggingBoardId] = useState<string | null>(null);
+  const [boardDragDelta, setBoardDragDelta] = useState<{ x: number; y: number } | null>(null);
+  const boardDragOriginalRef = useRef<BasePlaneBoard | null>(null);
+  const [polygonPoints, setPolygonPoints] = useState<Vec2[]>([]);
+  const [drawSnapHit, setDrawSnapHit] = useState<Vec2 | null>(null);
+  // CAD numeric entry while drawing a line / base-plane rectangle.
+  const [numericEntry, setNumericEntry] = useState<{
+    primary: string;
+    secondary: string;
+    field: 'primary' | 'secondary';
+  } | null>(null);
+  // startTextEditing is defined later; finalizeDrawing (defined earlier) reaches it via this ref.
+  const startTextEditingRef = useRef<((shape: CanvasTextShape, isNew?: boolean) => void) | null>(
+    null
+  );
+
   const [isPanning, setIsPanning] = useState(false);
   const [camera, setCamera] = useState({
     scale: 1,
@@ -235,6 +277,17 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     });
     return cache;
   }, [componentMap]);
+
+  // Placed items whose center falls outside every base-plane board (flagged in the UI).
+  const offBoardItemIds = useMemo(() => {
+    const boards = layout?.basePlane?.boards;
+    if (!layout || !boards || boards.length === 0) return new Set<string>();
+    const ids = new Set<string>();
+    layout.placedItems.forEach((item) => {
+      if (!pointInBoards({ x: item.x, y: item.y }, boards)) ids.add(item.id);
+    });
+    return ids;
+  }, [layout]);
 
   const connections = layout?.connections ?? [];
 
@@ -335,6 +388,7 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     if (!layout) {
       setSelectedItemIds(new Set());
       setSelectedShapeId(null);
+      setSelectedBoardId(null);
       setSelectedEndpoints([]);
       setDimensionSelection([]);
       return;
@@ -342,6 +396,8 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
 
     const itemIdSet = new Set(layout.placedItems.map((item) => item.id));
     const shapeIdSet = new Set(layout.shapes.map((shape) => shape.id));
+    const boardIdSet = new Set(layout.basePlane?.boards.map((board) => board.id) ?? []);
+    setSelectedBoardId((prev) => (prev && !boardIdSet.has(prev) ? null : prev));
 
     setSelectedItemIds((prev) => {
       if (prev.size === 0) return prev;
@@ -357,6 +413,16 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
 
     setSelectedEndpoints((prev) => prev.filter((endpoint) => itemIdSet.has(endpoint.itemId)));
   }, [layout]);
+
+  // Reset in-progress drawing state when the active tool changes.
+  useEffect(() => {
+    setPolygonPoints([]);
+    setNumericEntry(null);
+    setIsDrawing(false);
+    setDrawStart(null);
+    setDrawCurrent(null);
+    setDrawSnapHit(null);
+  }, [drawingTool]);
 
   useEffect(() => {
     onSelectionChange?.(Array.from(selectedItemIds));
@@ -443,51 +509,114 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     []
   );
 
-  const snapMeasurementPoint = useCallback(
-    (point: { x: number; y: number }) => {
-      let bestPoint = point;
-      let bestDistance = DIMENSION_SNAP_DISTANCE_MM;
+  // Unified snapping for sketch + dimension tools: snaps the cursor to track
+  // endpoints, item centers, drawn line endpoints/segments, base-plane board
+  // vertices/edges, and rectangle/circle perimeters.
+  const snapSketchPoint = useCallback(
+    (point: { x: number; y: number }, maxDistance: number = SKETCH_SNAP_DISTANCE_MM) => {
+      let bestPoint: Vec2 = point;
+      let bestDistance = maxDistance;
+      let snapped = false;
+
+      const consider = (candidate: Vec2, distance: number) => {
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          bestPoint = candidate;
+          snapped = true;
+        }
+      };
 
       layout?.placedItems.forEach((item) => {
-        const centerDistance = Math.hypot(item.x - point.x, item.y - point.y);
-        if (centerDistance < bestDistance) {
-          bestDistance = centerDistance;
-          bestPoint = { x: item.x, y: item.y };
-        }
+        consider({ x: item.x, y: item.y }, Math.hypot(item.x - point.x, item.y - point.y));
 
         const geometry = geometryCache.get(item.componentId);
         if (!geometry) return;
         const transform = { x: item.x, y: item.y, rotationDeg: item.rotationDeg };
         listConnectorEntries(geometry).forEach(({ local }) => {
           const connector = transformConnector(local, transform);
-          const distance = Math.hypot(connector.xMm - point.x, connector.yMm - point.y);
-          if (distance < bestDistance) {
-            bestDistance = distance;
-            bestPoint = { x: connector.xMm, y: connector.yMm };
-          }
+          consider(
+            { x: connector.xMm, y: connector.yMm },
+            Math.hypot(connector.xMm - point.x, connector.yMm - point.y)
+          );
         });
       });
 
       layout?.shapes.forEach((shape) => {
-        if (isDimensionShape(shape)) return;
         if (shape.type === 'rectangle') {
           const projection = projectPointToRectanglePerimeter(shape, point);
-          if (projection.distance < bestDistance) {
-            bestDistance = projection.distance;
-            bestPoint = projection.point;
-          }
+          consider(projection.point, projection.distance);
         } else if (shape.type === 'circle') {
           const projection = projectPointToCirclePerimeter(shape, point);
-          if (projection.distance < bestDistance) {
-            bestDistance = projection.distance;
-            bestPoint = projection.point;
-          }
+          consider(projection.point, projection.distance);
+        } else if (shape.type === 'line') {
+          const [a, b] = lineEndpoints(shape);
+          consider(a, Math.hypot(a.x - point.x, a.y - point.y));
+          consider(b, Math.hypot(b.x - point.x, b.y - point.y));
+          const projection = projectPointToSegment(point, a, b);
+          consider(projection.point, projection.distance);
         }
       });
 
-      return bestPoint;
+      layout?.basePlane?.boards.forEach((board) => {
+        boardVertices(board).forEach((v) => consider(v, Math.hypot(v.x - point.x, v.y - point.y)));
+        boardEdges(board).forEach(([a, b]) => {
+          const projection = projectPointToSegment(point, a, b);
+          consider(projection.point, projection.distance);
+        });
+      });
+
+      return { x: bestPoint.x, y: bestPoint.y, snapped };
     },
     [geometryCache, layout]
+  );
+
+  // Snap a dragged board's translation so its edges align/abut other boards' edges
+  // (axis-aligned bounding edges) when within BOARD_SNAP_DISTANCE_MM.
+  const snapBoardDelta = useCallback(
+    (original: BasePlaneBoard, dx: number, dy: number) => {
+      const boards = layout?.basePlane?.boards;
+      const base = basePlaneBounds([original]);
+      if (!boards || !base) return { x: dx, y: dy };
+      const bb = {
+        minX: base.minX + dx,
+        maxX: base.maxX + dx,
+        minY: base.minY + dy,
+        maxY: base.maxY + dy,
+      };
+      const thr = BOARD_SNAP_DISTANCE_MM;
+      let bestX: number | null = null;
+      let bestY: number | null = null;
+      const consider = (cur: number, target: number, axis: 'x' | 'y') => {
+        const adj = target - cur;
+        if (Math.abs(adj) > thr) return;
+        if (axis === 'x') {
+          if (bestX === null || Math.abs(adj) < Math.abs(bestX)) bestX = adj;
+        } else if (bestY === null || Math.abs(adj) < Math.abs(bestY)) {
+          bestY = adj;
+        }
+      };
+      for (const other of boards) {
+        if (other.id === original.id) continue;
+        const ob = basePlaneBounds([other]);
+        if (!ob) continue;
+        const yNear = bb.minY <= ob.maxY + thr && bb.maxY >= ob.minY - thr;
+        const xNear = bb.minX <= ob.maxX + thr && bb.maxX >= ob.minX - thr;
+        if (yNear) {
+          consider(bb.minX, ob.minX, 'x');
+          consider(bb.minX, ob.maxX, 'x');
+          consider(bb.maxX, ob.minX, 'x');
+          consider(bb.maxX, ob.maxX, 'x');
+        }
+        if (xNear) {
+          consider(bb.minY, ob.minY, 'y');
+          consider(bb.minY, ob.maxY, 'y');
+          consider(bb.maxY, ob.minY, 'y');
+          consider(bb.maxY, ob.maxY, 'y');
+        }
+      }
+      return { x: dx + (bestX ?? 0), y: dy + (bestY ?? 0) };
+    },
+    [layout]
   );
 
   const getItemTransform = useCallback(
@@ -717,97 +846,240 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     ]
   );
 
-  useEffect(() => {
-    const handlePointerUp = () => {
-      // Finalize drawing
-      if (isDrawing && drawStart && drawCurrent && drawingTool) {
-        const rawDx = drawCurrent.x - drawStart.x;
-        const rawDy = drawCurrent.y - drawStart.y;
-        const dx = Math.abs(rawDx);
-        const dy = Math.abs(rawDy);
-        const centerX = (drawStart.x + drawCurrent.x) / 2;
-        const centerY = (drawStart.y + drawCurrent.y) / 2;
-        let newShape: CanvasShape | null = null;
+  // Commit the in-progress drag-drawing (circle/rect/text/dimension/line/base-plane rect).
+  // Shared by pointer-up and the numeric-entry Enter key. Numeric values, when typed,
+  // override the dragged magnitude (length for line, width/height for rectangles).
+  const finalizeDrawing = useCallback(() => {
+    if (!isDrawing || !drawStart || !drawCurrent || !drawingTool) return;
+    if (drawingTool === 'basePlanePolygon') return;
 
-        if (drawingTool === 'circle') {
-          if (dx > 1 || dy > 1) {
-            const radius = Math.hypot(dx, dy) / 2;
-            newShape = {
-              id: generateId(),
-              type: 'circle',
-              x: centerX,
-              y: centerY,
-              width: radius * 2,
-              rotationDeg: 0,
-            };
-          }
-        } else if (drawingTool === 'rectangle') {
-          if (dx > 1 || dy > 1) {
-            const dimensions = computeRectangleDimensions(dx, dy, drawShiftActive);
-            newShape = {
-              id: generateId(),
-              type: 'rectangle',
-              x: centerX,
-              y: centerY,
-              width: dimensions.width,
-              height: dimensions.height,
-              rotationDeg: 0,
-            };
-          }
-        } else if (drawingTool === 'text') {
-          const dimensions = computeTextDimensions(dx, dy, drawShiftActive);
-          newShape = {
+    const rawDx = drawCurrent.x - drawStart.x;
+    const rawDy = drawCurrent.y - drawStart.y;
+    const absDx = Math.abs(rawDx);
+    const absDy = Math.abs(rawDy);
+    const centerX = (drawStart.x + drawCurrent.x) / 2;
+    const centerY = (drawStart.y + drawCurrent.y) / 2;
+    const parse = (value: string): number | null => {
+      const parsed = parseFloat(value);
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+    };
+
+    let newShape: CanvasShape | null = null;
+    let newBoard: BasePlaneBoard | null = null;
+    let textToEdit: CanvasTextShape | null = null;
+
+    if (drawingTool === 'circle') {
+      if (absDx > 1 || absDy > 1) {
+        const radius = Math.hypot(absDx, absDy) / 2;
+        newShape = {
+          id: generateId(),
+          type: 'circle',
+          x: centerX,
+          y: centerY,
+          width: radius * 2,
+          rotationDeg: 0,
+        };
+      }
+    } else if (drawingTool === 'rectangle' || drawingTool === 'basePlaneRect') {
+      const numW = numericEntry ? parse(numericEntry.primary) : null;
+      const numH = numericEntry ? parse(numericEntry.secondary) : null;
+      const dims = computeRectangleDimensions(absDx, absDy, drawShiftActive);
+      const width = numW ?? dims.width;
+      const height = numH ?? dims.height;
+      // With a typed dimension, grow from the start corner toward the drag direction.
+      const signX = rawDx >= 0 ? 1 : -1;
+      const signY = rawDy >= 0 ? 1 : -1;
+      const cx = numW != null ? drawStart.x + (signX * width) / 2 : centerX;
+      const cy = numH != null ? drawStart.y + (signY * height) / 2 : centerY;
+      if (width > SKETCH_MIN_LENGTH_MM && height > SKETCH_MIN_LENGTH_MM) {
+        if (drawingTool === 'basePlaneRect') {
+          newBoard = {
             id: generateId(),
-            type: 'text',
-            x: centerX,
-            y: centerY,
-            width: dimensions.width,
-            height: dimensions.height,
-            text: '',
-            fontSize: TEXT_FONT_SIZE_MM,
+            kind: 'rect',
+            x: cx,
+            y: cy,
+            width,
+            height,
             rotationDeg: 0,
           };
-        } else if (drawingTool === 'dimension') {
-          let dimensionDx = rawDx;
-          let dimensionDy = rawDy;
-          if (drawShiftActive) {
-            if (Math.abs(dimensionDx) > Math.abs(dimensionDy)) {
-              dimensionDy = 0;
-            } else {
-              dimensionDx = 0;
-            }
-          }
-          const length = Math.hypot(dimensionDx, dimensionDy);
-          if (length >= DIMENSION_MIN_LENGTH_MM) {
-            const dimensionCenterX = drawStart.x + dimensionDx / 2;
-            const dimensionCenterY = drawStart.y + dimensionDy / 2;
-            const angleDeg = (Math.atan2(dimensionDy, dimensionDx) * 180) / Math.PI;
-            newShape = {
-              id: generateId(),
-              type: 'dimension',
-              x: dimensionCenterX,
-              y: dimensionCenterY,
-              length,
-              rotationDeg: normalizeAngle(angleDeg),
-              offsetMm: DIMENSION_OFFSET_MM,
+        } else {
+          newShape = {
+            id: generateId(),
+            type: 'rectangle',
+            x: cx,
+            y: cy,
+            width,
+            height,
+            rotationDeg: 0,
+          };
+        }
+      }
+    } else if (drawingTool === 'line') {
+      let lx = rawDx;
+      let ly = rawDy;
+      if (drawShiftActive) {
+        if (Math.abs(lx) > Math.abs(ly)) ly = 0;
+        else lx = 0;
+      }
+      let length = Math.hypot(lx, ly);
+      const numLen = numericEntry ? parse(numericEntry.primary) : null;
+      if (numLen != null) {
+        if (length > 1e-6) {
+          const scale = numLen / length;
+          lx *= scale;
+          ly *= scale;
+        } else {
+          lx = numLen;
+          ly = 0;
+        }
+        length = numLen;
+      }
+      if (length >= SKETCH_MIN_LENGTH_MM) {
+        newShape = {
+          id: generateId(),
+          type: 'line',
+          x1: drawStart.x,
+          y1: drawStart.y,
+          x2: drawStart.x + lx,
+          y2: drawStart.y + ly,
+        };
+      }
+    } else if (drawingTool === 'text') {
+      const dims = computeTextDimensions(absDx, absDy, drawShiftActive);
+      textToEdit = {
+        id: generateId(),
+        type: 'text',
+        x: centerX,
+        y: centerY,
+        width: dims.width,
+        height: dims.height,
+        text: '',
+        fontSize: TEXT_FONT_SIZE_MM,
+        rotationDeg: 0,
+      };
+      newShape = textToEdit;
+    } else if (drawingTool === 'dimension') {
+      let dimensionDx = rawDx;
+      let dimensionDy = rawDy;
+      if (drawShiftActive) {
+        if (Math.abs(dimensionDx) > Math.abs(dimensionDy)) dimensionDy = 0;
+        else dimensionDx = 0;
+      }
+      const length = Math.hypot(dimensionDx, dimensionDy);
+      if (length >= DIMENSION_MIN_LENGTH_MM) {
+        newShape = {
+          id: generateId(),
+          type: 'dimension',
+          x: drawStart.x + dimensionDx / 2,
+          y: drawStart.y + dimensionDy / 2,
+          length,
+          rotationDeg: normalizeAngle((Math.atan2(dimensionDy, dimensionDx) * 180) / Math.PI),
+          offsetMm: DIMENSION_OFFSET_MM,
+        };
+      }
+    }
+
+    if (newShape) {
+      const shape = newShape;
+      onUpdateLayout((previous) => ({ ...previous, shapes: [...previous.shapes, shape] }));
+      if (textToEdit) {
+        const text = textToEdit;
+        startTextEditingRef.current?.(text, true);
+      }
+    } else if (newBoard) {
+      const board = newBoard;
+      onUpdateLayout((previous) => ({
+        ...previous,
+        basePlane: {
+          boards: [...(previous.basePlane?.boards ?? []), board],
+          thicknessMm: previous.basePlane?.thicknessMm ?? BASE_PLANE_DEFAULT_THICKNESS_MM,
+        },
+      }));
+    }
+
+    setIsDrawing(false);
+    setDrawStart(null);
+    setDrawCurrent(null);
+    setDrawShiftActive(false);
+    setNumericEntry(null);
+    setDrawSnapHit(null);
+  }, [
+    isDrawing,
+    drawStart,
+    drawCurrent,
+    drawingTool,
+    drawShiftActive,
+    numericEntry,
+    onUpdateLayout,
+  ]);
+
+  // Commit / cancel an in-progress base-plane polygon.
+  const commitPolygon = useCallback(() => {
+    if (polygonPoints.length >= 3) {
+      const board: BasePlaneBoard = {
+        id: generateId(),
+        kind: 'polygon',
+        points: polygonPoints.map((p) => ({ x: p.x, y: p.y })),
+      };
+      onUpdateLayout((previous) => ({
+        ...previous,
+        basePlane: {
+          boards: [...(previous.basePlane?.boards ?? []), board],
+          thicknessMm: previous.basePlane?.thicknessMm ?? BASE_PLANE_DEFAULT_THICKNESS_MM,
+        },
+      }));
+    }
+    setPolygonPoints([]);
+    setDrawCurrent(null);
+    setDrawSnapHit(null);
+  }, [polygonPoints, onUpdateLayout]);
+
+  // Place the next polygon vertex at an exact distance along the current cursor
+  // direction from the last vertex (CAD: type a length, Enter).
+  const addPolygonVertexAtLength = useCallback(
+    (lengthMm: number) => {
+      setPolygonPoints((prev) => {
+        const last = prev[prev.length - 1];
+        if (!last || !drawCurrent) return prev;
+        let dx = drawCurrent.x - last.x;
+        let dy = drawCurrent.y - last.y;
+        const d = Math.hypot(dx, dy);
+        if (d < 1e-6) {
+          dx = 1;
+          dy = 0;
+        } else {
+          dx /= d;
+          dy /= d;
+        }
+        return [...prev, { x: last.x + dx * lengthMm, y: last.y + dy * lengthMm }];
+      });
+      setNumericEntry(null);
+    },
+    [drawCurrent]
+  );
+
+  useEffect(() => {
+    const handlePointerUp = () => {
+      finalizeDrawing();
+
+      // Finalize base-plane board dragging
+      if (draggingBoardId && boardDragDelta && boardDragOriginalRef.current) {
+        const { x: dx, y: dy } = boardDragDelta;
+        const boardId = draggingBoardId;
+        if (Math.abs(dx) > 1e-6 || Math.abs(dy) > 1e-6) {
+          onUpdateLayout((previous) => {
+            if (!previous.basePlane) return previous;
+            return {
+              ...previous,
+              basePlane: {
+                ...previous.basePlane,
+                boards: previous.basePlane.boards.map((b) =>
+                  b.id === boardId ? translateBoard(b, dx, dy) : b
+                ),
+              },
             };
-          }
+          });
         }
-
-        if (newShape) {
-          onUpdateLayout((previous) => ({
-            ...previous,
-            shapes: [...previous.shapes, newShape as CanvasShape],
-          }));
-          if (drawingTool === 'text') {
-            startTextEditing(newShape as CanvasTextShape, true);
-          }
-        }
-
-        setIsDrawing(false);
-        setDrawStart(null);
-        setDrawCurrent(null);
-        setDrawShiftActive(false);
       }
 
       // Finalize shape dragging
@@ -878,6 +1150,9 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
 
       setDraggingItemId(null);
       setDraggingShapeId(null);
+      setDraggingBoardId(null);
+      setBoardDragDelta(null);
+      boardDragOriginalRef.current = null;
       setDragStartClient(null);
       setDragStartTransform(null);
       setDragPreview(null);
@@ -898,15 +1173,13 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     };
   }, [
     autoConnectSnappedEndpoints,
+    boardDragDelta,
     dragGroupDelta,
     dragPreview,
+    draggingBoardId,
     draggingItemId,
     draggingShapeId,
-    drawCurrent,
-    drawShiftActive,
-    drawStart,
-    drawingTool,
-    isDrawing,
+    finalizeDrawing,
     onUpdateLayout,
     releasePointer,
     snappedEndpoints,
@@ -1032,6 +1305,7 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   const clearSelections = useCallback(() => {
     setSelectedItemIds(new Set());
     setSelectedShapeId(null);
+    setSelectedBoardId(null);
     setSelectedEndpoints([]);
     setDimensionSelection([]);
   }, []);
@@ -1049,6 +1323,10 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     },
     [setSelectedEndpoints, setSelectedItemIds, setSelectedShapeId, setDraggingShapeId]
   );
+
+  useEffect(() => {
+    startTextEditingRef.current = startTextEditing;
+  }, [startTextEditing]);
 
   const finishTextEditing = useCallback(
     (commit: boolean) => {
@@ -1135,20 +1413,45 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       if (shapeId) {
         event.stopPropagation();
         setSelectedShapeId(shapeId);
+        setSelectedBoardId(null);
         setSelectedItemIds(new Set());
         setSelectedEndpoints([]);
         setDimensionSelection([]);
-        // Start dragging shape if not in drawing mode
+        // Start dragging shape if not in drawing mode. Lines have no center transform;
+        // they are select/delete/edit-only in this iteration.
         const worldPoint = clientPointToWorld({ x: event.clientX, y: event.clientY });
         if (worldPoint && layout) {
           const shape = layout.shapes.find((s) => s.id === shapeId);
-          if (shape) {
+          if (shape && shape.type !== 'line') {
             setDraggingShapeId(shapeId);
             setDragStartClient({ x: event.clientX, y: event.clientY });
             setDragStartTransform({ x: shape.x, y: shape.y, rotationDeg: shape.rotationDeg });
             setDragPreview({ x: shape.x, y: shape.y, rotationDeg: shape.rotationDeg });
             capturePointer(event.pointerId);
           }
+        }
+        return;
+      }
+    }
+
+    // Check if clicking on a base-plane board (its outline) — select + start dragging
+    const clickedBoard = targetElement?.closest('[data-board]');
+    if (clickedBoard && !drawingTool) {
+      const boardId = clickedBoard.getAttribute('data-board');
+      if (boardId) {
+        event.stopPropagation();
+        setSelectedBoardId(boardId);
+        setSelectedShapeId(null);
+        setSelectedItemIds(new Set());
+        setSelectedEndpoints([]);
+        setDimensionSelection([]);
+        const board = layout?.basePlane?.boards.find((b) => b.id === boardId);
+        if (board) {
+          boardDragOriginalRef.current = board;
+          setDraggingBoardId(boardId);
+          setBoardDragDelta({ x: 0, y: 0 });
+          setDragStartClient({ x: event.clientX, y: event.clientY });
+          capturePointer(event.pointerId);
         }
         return;
       }
@@ -1188,11 +1491,54 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     // If in drawing mode, start drawing
     if (drawingTool && worldPoint) {
       event.preventDefault();
-      const anchor = drawingTool === 'dimension' ? snapMeasurementPoint(worldPoint) : worldPoint;
+      const snapDistance =
+        drawingTool === 'dimension' ? DIMENSION_SNAP_DISTANCE_MM : SKETCH_SNAP_DISTANCE_MM;
+      const useSnap =
+        drawingTool === 'dimension' ||
+        drawingTool === 'line' ||
+        drawingTool === 'rectangle' ||
+        drawingTool === 'basePlaneRect' ||
+        drawingTool === 'basePlanePolygon';
+      const snap = useSnap
+        ? snapSketchPoint(worldPoint, snapDistance)
+        : { x: worldPoint.x, y: worldPoint.y, snapped: false };
+      const anchor = { x: snap.x, y: snap.y };
+
+      // Multi-click polygon: each click drops a vertex; clicking the first vertex closes it.
+      // Shift = 90° (ortho) corner; a typed length sets the exact segment distance.
+      if (drawingTool === 'basePlanePolygon') {
+        capturePointer(event.pointerId);
+        clearSelections();
+        const last = polygonPoints[polygonPoints.length - 1];
+        let pt: Vec2 = anchor;
+        if (last && event.shiftKey) pt = orthoConstrain(last, pt);
+        const numLen = numericEntry ? parseFloat(numericEntry.primary) : NaN;
+        if (last && Number.isFinite(numLen) && numLen > 0) {
+          let dx = pt.x - last.x;
+          let dy = pt.y - last.y;
+          const d = Math.hypot(dx, dy) || 1;
+          pt = { x: last.x + (dx / d) * numLen, y: last.y + (dy / d) * numLen };
+        }
+        if (polygonPoints.length >= 3) {
+          const first = polygonPoints[0];
+          if (Math.hypot(first.x - pt.x, first.y - pt.y) <= POLYGON_CLOSE_DISTANCE_MM) {
+            commitPolygon();
+            return;
+          }
+        }
+        setPolygonPoints((prev) => [...prev, pt]);
+        setDrawCurrent(pt);
+        setNumericEntry(null);
+        setDrawSnapHit(snap.snapped ? pt : null);
+        return;
+      }
+
       setIsDrawing(true);
       setDrawShiftActive(event.shiftKey);
-      setDrawStart({ x: anchor.x, y: anchor.y });
-      setDrawCurrent({ x: anchor.x, y: anchor.y });
+      setDrawStart(anchor);
+      setDrawCurrent(anchor);
+      setDrawSnapHit(snap.snapped ? anchor : null);
+      setNumericEntry(null);
       capturePointer(event.pointerId);
       clearSelections();
       return;
@@ -1207,14 +1553,50 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   };
 
   const handlePointerMove = (event: ReactPointerEvent<SVGSVGElement>) => {
+    // Polygon rubber-band (click-based, so not gated on isDrawing). Shift = 90° corner.
+    if (drawingTool === 'basePlanePolygon' && polygonPoints.length > 0) {
+      const worldPoint = clientPointToWorld({ x: event.clientX, y: event.clientY });
+      if (worldPoint) {
+        const snap = snapSketchPoint(worldPoint, SKETCH_SNAP_DISTANCE_MM);
+        let pt: Vec2 = { x: snap.x, y: snap.y };
+        if (event.shiftKey) pt = orthoConstrain(polygonPoints[polygonPoints.length - 1], pt);
+        setDrawCurrent(pt);
+        setDrawSnapHit(snap.snapped && !event.shiftKey ? pt : null);
+      }
+      setDrawShiftActive(event.shiftKey);
+      return;
+    }
+
     // Handle drawing
     if (isDrawing && drawStart) {
       const worldPoint = clientPointToWorld({ x: event.clientX, y: event.clientY });
       if (worldPoint) {
-        const anchor = drawingTool === 'dimension' ? snapMeasurementPoint(worldPoint) : worldPoint;
-        setDrawCurrent({ x: anchor.x, y: anchor.y });
+        const useSnap =
+          drawingTool === 'dimension' ||
+          drawingTool === 'line' ||
+          drawingTool === 'rectangle' ||
+          drawingTool === 'basePlaneRect';
+        const snapDistance =
+          drawingTool === 'dimension' ? DIMENSION_SNAP_DISTANCE_MM : SKETCH_SNAP_DISTANCE_MM;
+        const snap = useSnap
+          ? snapSketchPoint(worldPoint, snapDistance)
+          : { x: worldPoint.x, y: worldPoint.y, snapped: false };
+        setDrawCurrent({ x: snap.x, y: snap.y });
+        setDrawSnapHit(snap.snapped ? { x: snap.x, y: snap.y } : null);
       }
       setDrawShiftActive(event.shiftKey);
+      return;
+    }
+
+    // Handle base-plane board dragging (with edge snapping)
+    if (draggingBoardId && dragStartClient && boardDragOriginalRef.current) {
+      event.preventDefault();
+      const worldDelta = clientDeltaToWorld({
+        x: event.clientX - dragStartClient.x,
+        y: event.clientY - dragStartClient.y,
+      });
+      if (!worldDelta) return;
+      setBoardDragDelta(snapBoardDelta(boardDragOriginalRef.current, worldDelta.dx, worldDelta.dy));
       return;
     }
 
@@ -1528,6 +1910,7 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       if (selectedShapeId) {
         const currentShape = layout.shapes.find((shape) => shape.id === selectedShapeId);
         if (!currentShape) return;
+        if (currentShape.type === 'line') return; // lines are defined by endpoints, not rotation
 
         const newRotationDeg = normalizeAngle(currentShape.rotationDeg + deltaDeg);
 
@@ -1600,6 +1983,20 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       return;
     }
 
+    // Handle base-plane board deletion
+    if (selectedBoardId) {
+      onUpdateLayout((previous) => {
+        if (!previous.basePlane) return previous;
+        const boards = previous.basePlane.boards.filter((board) => board.id !== selectedBoardId);
+        return {
+          ...previous,
+          basePlane: boards.length > 0 ? { ...previous.basePlane, boards } : undefined,
+        };
+      });
+      setSelectedBoardId(null);
+      return;
+    }
+
     // Handle item deletion
     if (selectedItemIds.size === 0) return;
 
@@ -1616,7 +2013,45 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     setSelectedItemIds(new Set());
     setSelectedEndpoints([]);
     setDimensionSelection((prev) => prev.filter((id) => !selectedItemIds.has(id)));
-  }, [layout, onUpdateLayout, selectedItemIds, selectedShapeId]);
+  }, [layout, onUpdateLayout, selectedItemIds, selectedShapeId, selectedBoardId]);
+
+  // Post-edit: set an exact length on a selected line (keeps the start endpoint).
+  const setLineLengthMm = useCallback(
+    (lineId: string, lengthMm: number) => {
+      if (!Number.isFinite(lengthMm) || lengthMm <= 0) return;
+      onUpdateLayout((previous) => ({
+        ...previous,
+        shapes: previous.shapes.map((shape) => {
+          if (shape.id !== lineId || shape.type !== 'line') return shape;
+          const cur = Math.hypot(shape.x2 - shape.x1, shape.y2 - shape.y1) || 1;
+          const ux = (shape.x2 - shape.x1) / cur;
+          const uy = (shape.y2 - shape.y1) / cur;
+          return { ...shape, x2: shape.x1 + ux * lengthMm, y2: shape.y1 + uy * lengthMm };
+        }),
+      }));
+    },
+    [onUpdateLayout]
+  );
+
+  // Post-edit: set an exact width/height on a selected rectangular board.
+  const setBoardRectSize = useCallback(
+    (boardId: string, dim: 'width' | 'height', value: number) => {
+      if (!Number.isFinite(value) || value <= 0) return;
+      onUpdateLayout((previous) => {
+        if (!previous.basePlane) return previous;
+        return {
+          ...previous,
+          basePlane: {
+            ...previous.basePlane,
+            boards: previous.basePlane.boards.map((board) =>
+              board.id === boardId && board.kind === 'rect' ? { ...board, [dim]: value } : board
+            ),
+          },
+        };
+      });
+    },
+    [onUpdateLayout]
+  );
 
   // Connect endpoints reuses the same connector math as snapping: match directions, then translate the moving item.
   const connectSelectedEndpoints = useCallback(() => {
@@ -1899,7 +2334,7 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
         event.preventDefault();
         rotateSelected(event.shiftKey ? -ROTATION_STEP_DEG : ROTATION_STEP_DEG);
       } else if (event.key === 'Delete' || event.key === 'Backspace') {
-        if (selectedItemIds.size === 0 && !selectedShapeId) return;
+        if (selectedItemIds.size === 0 && !selectedShapeId && !selectedBoardId) return;
         event.preventDefault();
         deleteSelectedItem();
       } else if (event.key === 'Escape') {
@@ -1910,7 +2345,99 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
 
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
-  }, [clearSelections, deleteSelectedItem, rotateSelected, selectedItemIds, selectedShapeId]);
+  }, [
+    clearSelections,
+    deleteSelectedItem,
+    rotateSelected,
+    selectedItemIds,
+    selectedShapeId,
+    selectedBoardId,
+  ]);
+
+  // CAD-style keyboard while drawing: type an exact dimension, Tab between
+  // width/height, Enter commits, Escape cancels. Polygon: Enter closes, Escape cancels.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target) {
+        const tag = target.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable) {
+          return;
+        }
+      }
+      const drawingActive =
+        isDrawing &&
+        (drawingTool === 'line' || drawingTool === 'rectangle' || drawingTool === 'basePlaneRect');
+      const polygonActive = drawingTool === 'basePlanePolygon' && polygonPoints.length > 0;
+
+      if (event.key === 'Enter') {
+        if (drawingActive) {
+          event.preventDefault();
+          finalizeDrawing();
+        } else if (polygonActive) {
+          event.preventDefault();
+          const numLen = numericEntry ? parseFloat(numericEntry.primary) : NaN;
+          if (Number.isFinite(numLen) && numLen > 0) addPolygonVertexAtLength(numLen);
+          else commitPolygon();
+        }
+        return;
+      }
+      if (event.key === 'Escape') {
+        if (drawingActive) {
+          event.preventDefault();
+          setIsDrawing(false);
+          setDrawStart(null);
+          setDrawCurrent(null);
+          setNumericEntry(null);
+          setDrawSnapHit(null);
+        } else if (polygonActive) {
+          event.preventDefault();
+          setPolygonPoints([]);
+          setDrawCurrent(null);
+          setDrawSnapHit(null);
+        }
+        return;
+      }
+      if (!drawingActive && !polygonActive) return;
+
+      const twoFields = drawingTool === 'rectangle' || drawingTool === 'basePlaneRect';
+      if (event.key === 'Tab' && twoFields) {
+        event.preventDefault();
+        setNumericEntry((prev) => {
+          const base = prev ?? { primary: '', secondary: '', field: 'primary' as const };
+          return { ...base, field: base.field === 'primary' ? 'secondary' : 'primary' };
+        });
+        return;
+      }
+      if (event.key === 'Backspace') {
+        event.preventDefault();
+        setNumericEntry((prev) =>
+          prev ? { ...prev, [prev.field]: prev[prev.field].slice(0, -1) } : prev
+        );
+        return;
+      }
+      if (/^[0-9.]$/.test(event.key)) {
+        event.preventDefault();
+        setNumericEntry((prev) => {
+          const base = prev ?? { primary: '', secondary: '', field: 'primary' as const };
+          const current = base[base.field];
+          if (event.key === '.' && current.includes('.')) return base;
+          return { ...base, [base.field]: current + event.key };
+        });
+      }
+    };
+
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [
+    isDrawing,
+    drawingTool,
+    polygonPoints,
+    numericEntry,
+    finalizeDrawing,
+    commitPolygon,
+    addPolygonVertexAtLength,
+  ]);
 
   // Native non-passive wheel listener (React onWheel is passive, can't preventDefault)
   useEffect(() => {
@@ -1938,6 +2465,20 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       </div>
     );
   }
+
+  const selectedLineShape =
+    selectedShapeId != null
+      ? (layout.shapes.find((s) => s.id === selectedShapeId && s.type === 'line') as
+          | CanvasLineShape
+          | undefined)
+      : undefined;
+  const selectedRectBoard =
+    selectedBoardId != null
+      ? layout.basePlane?.boards.find(
+          (b): b is Extract<BasePlaneBoard, { kind: 'rect' }> =>
+            b.id === selectedBoardId && b.kind === 'rect'
+        )
+      : undefined;
 
   return (
     <div className="canvas-container flex flex-1 flex-col bg-slate-900">
@@ -1976,6 +2517,30 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
             height={viewHeight * 3}
             fill="url(#grid)"
           />
+
+          {/* Base-plane boards (the benchwork tracks sit on) */}
+          {layout.basePlane?.boards.map((board) => {
+            const selected = selectedBoardId === board.id;
+            const live =
+              draggingBoardId === board.id && boardDragDelta
+                ? translateBoard(board, boardDragDelta.x, boardDragDelta.y)
+                : board;
+            const d = boardPathD(live);
+            return (
+              <g key={board.id}>
+                {/* Filled body is grabbable anywhere so the whole board can be dragged */}
+                <path
+                  data-board={board.id}
+                  d={d}
+                  fill={selected ? 'rgba(96, 165, 250, 0.16)' : 'rgba(96, 165, 250, 0.07)'}
+                  stroke={selected ? '#93c5fd' : '#3b82f6'}
+                  strokeWidth={selected ? 3 : 2}
+                  strokeDasharray="14 8"
+                  style={{ cursor: 'move' }}
+                />
+              </g>
+            );
+          })}
 
           {layout.placedItems.map((item) => {
             const component = componentMap.get(item.componentId);
@@ -2020,6 +2585,70 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
             />
           ))}
 
+          {/* Off-board warning rings for tracks outside the base plane */}
+          {offBoardItemIds.size > 0 &&
+            layout.placedItems.map((item) => {
+              if (!offBoardItemIds.has(item.id)) return null;
+              const t = getItemTransform(item);
+              return (
+                <circle
+                  key={`offboard-${item.id}`}
+                  cx={t.x}
+                  cy={t.y}
+                  r={22}
+                  fill="none"
+                  stroke="#f87171"
+                  strokeWidth={3}
+                  strokeDasharray="7 5"
+                  pointerEvents="none"
+                />
+              );
+            })}
+
+          {/* In-progress base-plane polygon */}
+          {drawingTool === 'basePlanePolygon' && polygonPoints.length > 0 && (
+            <g pointerEvents="none">
+              <polyline
+                points={[...polygonPoints, ...(drawCurrent ? [drawCurrent] : [])]
+                  .map((p) => `${p.x},${p.y}`)
+                  .join(' ')}
+                fill="rgba(96, 165, 250, 0.07)"
+                stroke="#60a5fa"
+                strokeWidth={2}
+                strokeDasharray="8 6"
+                strokeLinejoin="round"
+              />
+              {polygonPoints.map((p, i) => (
+                <circle
+                  key={`poly-${i}`}
+                  cx={p.x}
+                  cy={p.y}
+                  r={i === 0 ? 6 : 4}
+                  fill={i === 0 ? '#bfdbfe' : '#60a5fa'}
+                  stroke="#1e3a8a"
+                  strokeWidth={1}
+                />
+              ))}
+              {drawCurrent &&
+                (() => {
+                  const last = polygonPoints[polygonPoints.length - 1];
+                  const len = Math.hypot(drawCurrent.x - last.x, drawCurrent.y - last.y);
+                  if (len < 0.5) return null;
+                  return (
+                    <text
+                      x={(last.x + drawCurrent.x) / 2}
+                      y={(last.y + drawCurrent.y) / 2 - 6}
+                      textAnchor="middle"
+                      fontSize={8}
+                      className="fill-slate-100"
+                    >
+                      {`${len.toFixed(1)} mm`}
+                    </text>
+                  );
+                })()}
+            </g>
+          )}
+
           {/* Render drawing preview */}
           {isDrawing && drawStart && drawCurrent && drawingTool && (
             <DrawingPreview
@@ -2029,7 +2658,163 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
               drawShiftActive={drawShiftActive}
             />
           )}
+
+          {/* Snap indicator */}
+          {drawSnapHit && (
+            <g pointerEvents="none">
+              <circle
+                cx={drawSnapHit.x}
+                cy={drawSnapHit.y}
+                r={6}
+                fill="none"
+                stroke="#fbbf24"
+                strokeWidth={2}
+              />
+              <circle cx={drawSnapHit.x} cy={drawSnapHit.y} r={1.5} fill="#fbbf24" />
+            </g>
+          )}
         </svg>
+
+        {/* CAD numeric-entry / hint HUD */}
+        {isDrawing &&
+          (drawingTool === 'line' ||
+            drawingTool === 'rectangle' ||
+            drawingTool === 'basePlaneRect') && (
+            <div className="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 rounded border border-blue-500/60 bg-slate-900/90 px-3 py-1 text-xs text-slate-100">
+              {drawingTool === 'line' ? (
+                <span>
+                  Length:{' '}
+                  <span className="font-semibold text-blue-200">
+                    {numericEntry?.primary || '—'}
+                  </span>{' '}
+                  mm
+                </span>
+              ) : (
+                <span>
+                  W:{' '}
+                  <span
+                    className={
+                      numericEntry?.field === 'primary'
+                        ? 'font-semibold text-blue-200 underline'
+                        : 'font-semibold text-blue-200'
+                    }
+                  >
+                    {numericEntry?.primary || '—'}
+                  </span>{' '}
+                  H:{' '}
+                  <span
+                    className={
+                      numericEntry?.field === 'secondary'
+                        ? 'font-semibold text-blue-200 underline'
+                        : 'font-semibold text-blue-200'
+                    }
+                  >
+                    {numericEntry?.secondary || '—'}
+                  </span>{' '}
+                  mm
+                </span>
+              )}
+              <span className="ml-2 text-slate-400">type a size · Enter commits · Esc cancels</span>
+            </div>
+          )}
+
+        {drawingTool === 'basePlanePolygon' && (
+          <div className="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 rounded border border-blue-500/60 bg-slate-900/90 px-3 py-1 text-xs text-slate-100">
+            {polygonPoints.length > 0 && numericEntry?.primary ? (
+              <span className="mr-2">
+                Segment: <span className="font-semibold text-blue-200">{numericEntry.primary}</span>{' '}
+                mm · Enter places ·
+              </span>
+            ) : null}
+            Base-plane outline · click to add points · Shift = 90° · type a length · click first
+            point / Enter to close · Esc cancels
+          </div>
+        )}
+
+        {/* Post-edit: exact dimensions for a selected line */}
+        {selectedLineShape && !drawingTool && (
+          <div className="absolute left-3 top-3 flex items-center gap-2 rounded border border-blue-500/60 bg-slate-900/90 px-3 py-1 text-xs text-slate-100">
+            <span className="text-slate-400">Line length</span>
+            <input
+              key={selectedLineShape.id}
+              type="number"
+              step="0.1"
+              min="0"
+              defaultValue={lineLength(selectedLineShape).toFixed(1)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  setLineLengthMm(selectedLineShape.id, parseFloat(event.currentTarget.value));
+                  event.currentTarget.blur();
+                }
+              }}
+              onBlur={(event) =>
+                setLineLengthMm(selectedLineShape.id, parseFloat(event.currentTarget.value))
+              }
+              className="w-20 rounded border border-slate-700 bg-slate-800 px-1 py-0.5 text-slate-100"
+            />
+            <span className="text-slate-400">mm</span>
+          </div>
+        )}
+
+        {/* Post-edit: exact width/height for a selected rectangular board */}
+        {selectedRectBoard && !drawingTool && (
+          <div className="absolute left-3 top-3 flex items-center gap-2 rounded border border-blue-500/60 bg-slate-900/90 px-3 py-1 text-xs text-slate-100">
+            <span className="text-slate-400">Board</span>
+            <span>W</span>
+            <input
+              key={`${selectedRectBoard.id}-w`}
+              type="number"
+              step="1"
+              min="0"
+              defaultValue={selectedRectBoard.width.toFixed(1)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  setBoardRectSize(
+                    selectedRectBoard.id,
+                    'width',
+                    parseFloat(event.currentTarget.value)
+                  );
+                  event.currentTarget.blur();
+                }
+              }}
+              onBlur={(event) =>
+                setBoardRectSize(
+                  selectedRectBoard.id,
+                  'width',
+                  parseFloat(event.currentTarget.value)
+                )
+              }
+              className="w-20 rounded border border-slate-700 bg-slate-800 px-1 py-0.5 text-slate-100"
+            />
+            <span>H</span>
+            <input
+              key={`${selectedRectBoard.id}-h`}
+              type="number"
+              step="1"
+              min="0"
+              defaultValue={selectedRectBoard.height.toFixed(1)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  setBoardRectSize(
+                    selectedRectBoard.id,
+                    'height',
+                    parseFloat(event.currentTarget.value)
+                  );
+                  event.currentTarget.blur();
+                }
+              }}
+              onBlur={(event) =>
+                setBoardRectSize(
+                  selectedRectBoard.id,
+                  'height',
+                  parseFloat(event.currentTarget.value)
+                )
+              }
+              className="w-20 rounded border border-slate-700 bg-slate-800 px-1 py-0.5 text-slate-100"
+            />
+            <span className="text-slate-400">mm</span>
+          </div>
+        )}
       </div>
     </div>
   );

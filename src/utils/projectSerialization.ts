@@ -1,6 +1,9 @@
 import type { Project } from '../types/project';
 import type {
+  BasePlane,
+  BasePlaneBoard,
   CanvasDimensionShape,
+  CanvasLineShape,
   CanvasPrimitiveShape,
   CanvasShape,
   CanvasTextShape,
@@ -13,12 +16,19 @@ import type {
   TrackComponentDefinition,
   TrackComponentType,
   TrackSystemDefinition,
+  Vec2,
 } from '../types/trackSystem';
 import { cloneLayoutState } from './cloneLayout';
 
-const EXPORT_VERSION = 1;
+const EXPORT_VERSION = 2;
 
-const TRACK_COMPONENT_TYPES: TrackComponentType[] = ['straight', 'curve', 'switch', 'other'];
+const TRACK_COMPONENT_TYPES: TrackComponentType[] = [
+  'straight',
+  'curve',
+  'switch',
+  'crossing',
+  'other',
+];
 
 export type ProjectExportPayload = {
   version: number;
@@ -164,6 +174,8 @@ function validateLayout(
     ? raw.shapes.map(validateShape).filter((shape): shape is CanvasShape => Boolean(shape))
     : [];
 
+  const basePlane = validateBasePlane(raw.basePlane);
+
   const activeTrackSystemId =
     typeof raw.activeTrackSystemId === 'string' &&
     trackSystems.some((system) => system.id === raw.activeTrackSystemId)
@@ -176,9 +188,66 @@ function validateLayout(
     placedItems,
     connections,
     shapes,
+    ...(basePlane ? { basePlane } : {}),
   };
 
   return { ok: true, layout };
+}
+
+function validateBasePlane(candidate: unknown): BasePlane | undefined {
+  if (!candidate || typeof candidate !== 'object') return undefined;
+  const raw = candidate as Partial<BasePlane>;
+  if (!Array.isArray(raw.boards)) return undefined;
+
+  const boards = raw.boards
+    .map(validateBasePlaneBoard)
+    .filter((board): board is BasePlaneBoard => Boolean(board));
+
+  if (boards.length === 0) return undefined;
+
+  return {
+    boards,
+    ...(isFiniteNumber(raw.thicknessMm) ? { thicknessMm: raw.thicknessMm } : {}),
+  };
+}
+
+function validateBasePlaneBoard(candidate: unknown): BasePlaneBoard | null {
+  if (!candidate || typeof candidate !== 'object') return null;
+  const raw = candidate as BasePlaneBoard;
+  if (!isString(raw.id)) return null;
+
+  if (raw.kind === 'rect') {
+    if (
+      !isFiniteNumber(raw.x) ||
+      !isFiniteNumber(raw.y) ||
+      !isFiniteNumber(raw.width) ||
+      !isFiniteNumber(raw.height) ||
+      !isFiniteNumber(raw.rotationDeg)
+    ) {
+      return null;
+    }
+    return {
+      id: raw.id,
+      kind: 'rect',
+      x: raw.x,
+      y: raw.y,
+      width: raw.width,
+      height: raw.height,
+      rotationDeg: raw.rotationDeg,
+    };
+  }
+
+  if (raw.kind === 'polygon') {
+    if (!Array.isArray(raw.points)) return null;
+    const points = raw.points.filter(
+      (p): p is Vec2 =>
+        Boolean(p) && typeof p === 'object' && isFiniteNumber(p.x) && isFiniteNumber(p.y)
+    );
+    if (points.length < 3) return null;
+    return { id: raw.id, kind: 'polygon', points: points.map((p) => ({ x: p.x, y: p.y })) };
+  }
+
+  return null;
 }
 
 function validateTrackSystem(candidate: unknown): TrackSystemDefinition | null {
@@ -252,9 +321,23 @@ function validatePlacedItem(candidate: unknown): PlacedItem | null {
     y: raw.y,
     rotationDeg: raw.rotationDeg,
     isGrounded: typeof raw.isGrounded === 'boolean' ? raw.isGrounded : undefined,
-    elevationStartMm: isFiniteNumber(raw.elevationStartMm) ? raw.elevationStartMm : undefined,
-    elevationEndMm: isFiniteNumber(raw.elevationEndMm) ? raw.elevationEndMm : undefined,
+    connectorElevationsMm: validateConnectorElevations(raw.connectorElevationsMm),
   };
+}
+
+function validateConnectorElevations(value: unknown): Record<string, number> | undefined {
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+
+  const entries = Object.entries(value as Record<string, unknown>).filter(([, elevation]) =>
+    isFiniteNumber(elevation)
+  );
+  if (entries.length === 0) {
+    return undefined;
+  }
+
+  return Object.fromEntries(entries) as Record<string, number>;
 }
 
 function validateConnection(candidate: unknown): EndpointConnection | null {
@@ -347,6 +430,26 @@ function validateShape(candidate: unknown): CanvasShape | null {
         width: text.width,
         height: text.height,
         rotationDeg: text.rotationDeg,
+      };
+    }
+    case 'line': {
+      const line = raw as CanvasLineShape;
+      if (
+        !isFiniteNumber(line.x1) ||
+        !isFiniteNumber(line.y1) ||
+        !isFiniteNumber(line.x2) ||
+        !isFiniteNumber(line.y2)
+      ) {
+        return null;
+      }
+      return {
+        id: line.id,
+        type: 'line',
+        x1: line.x1,
+        y1: line.y1,
+        x2: line.x2,
+        y2: line.y2,
+        label: isString(line.label) ? line.label : undefined,
       };
     }
     case 'dimension': {

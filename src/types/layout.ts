@@ -1,4 +1,4 @@
-import type { EndpointRef, TrackSystemDefinition } from './trackSystem';
+import type { EndpointRef, TrackSystemDefinition, Vec2 } from './trackSystem';
 
 export interface PlacedItem {
   /** Unique instance identifier (e.g. uuid) */
@@ -9,8 +9,7 @@ export interface PlacedItem {
   y: number;
   rotationDeg: number;
   isGrounded?: boolean;
-  elevationStartMm?: number;
-  elevationEndMm?: number;
+  connectorElevationsMm?: Record<string, number>;
 }
 
 export interface LayoutState {
@@ -24,13 +23,44 @@ export interface LayoutState {
   connections: EndpointConnection[];
   /** Simple shapes drawn on the canvas */
   shapes: CanvasShape[];
+  /** User-drawn baseboard/benchwork that tracks are placed onto (drives the 3D baseboard) */
+  basePlane?: BasePlane;
+}
+
+/** A single benchwork board: a rectangle or an arbitrary closed polygon (mm). */
+export type BasePlaneBoard =
+  | {
+      id: string;
+      kind: 'rect';
+      /** Center X/Y in mm */
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+      rotationDeg: number;
+    }
+  | {
+      id: string;
+      kind: 'polygon';
+      /** Closed-loop vertices in mm (order matters; last connects back to first) */
+      points: Vec2[];
+    };
+
+/** The base plane: a set of boards forming the table the layout sits on. */
+export interface BasePlane {
+  boards: BasePlaneBoard[];
+  /** Board thickness in mm (for the 3D slab); defaults applied at render time. */
+  thicknessMm?: number;
 }
 
 export interface EndpointConnection {
   endpoints: [EndpointRef, EndpointRef];
 }
 
-export type ShapeType = 'rectangle' | 'circle' | 'text' | 'dimension';
+export type ShapeType = 'rectangle' | 'circle' | 'text' | 'dimension' | 'line';
+
+/** Active drawing tool: a sketch shape, or a base-plane board tool. */
+export type DrawingTool = ShapeType | 'basePlaneRect' | 'basePlanePolygon';
 
 export type CanvasPrimitiveShape = {
   /** Unique instance identifier (e.g. uuid) */
@@ -81,6 +111,22 @@ export type CanvasDimensionShape = {
   label?: string;
 };
 
-export type CanvasShape = CanvasPrimitiveShape | CanvasTextShape | CanvasDimensionShape;
+export type CanvasLineShape = {
+  id: string;
+  type: 'line';
+  /** Endpoints in mm */
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  /** Optional custom label; when absent, the length is shown */
+  label?: string;
+};
+
+export type CanvasShape =
+  | CanvasPrimitiveShape
+  | CanvasTextShape
+  | CanvasDimensionShape
+  | CanvasLineShape;
 
 /** LayoutState is intentionally generic right now; future phases will extend it with connectors, grid settings, etc. */

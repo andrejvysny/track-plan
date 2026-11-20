@@ -1,6 +1,7 @@
 import type { ChangeEventHandler } from 'react';
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { TrackComponentDefinition, TrackComponentType } from './types/trackSystem';
+import type { Canvas3DCameraState } from './components/Layout/Canvas3D';
 import { pikoA_H0 } from './data/pikoA_H0';
 import { Canvas, type CanvasHandle } from './components/Layout/Canvas';
 import { ComponentsSidebar } from './components/Layout/ComponentsSidebar';
@@ -10,14 +11,14 @@ import { TrackUsageCounter } from './components/Layout/TrackUsageCounter';
 import { useProjectsState } from './state/projectsState';
 import { buildLayoutSvgString } from './export/exportSvg';
 import type { EndpointRef } from './types/trackSystem';
-import type { ShapeType } from './types/layout';
+import type { DrawingTool } from './types/layout';
 import { ROTATION_STEP_DEG } from './constants/layout';
 import { generateId } from './utils/idGenerator';
 import { TRACK_COMPONENT_TYPES } from './constants/trackUsage';
 import type { TrackUsageComponentCount, TrackUsageSummary } from './types/trackUsage';
 import { connectionMatchesEndpoints } from './utils/connectionUtils';
 import { buildProjectExport, parseProjectImport } from './utils/projectSerialization';
-import { propagateElevation } from './utils/elevationUtils';
+import { propagateConnectorElevations } from './utils/elevationUtils';
 
 const Canvas3D = lazy(() => import('./components/Layout/Canvas3D'));
 
@@ -45,8 +46,18 @@ function App() {
   const [selectedEndpoints, setSelectedEndpoints] = useState<EndpointRef[]>([]);
   const [debugMode, setDebugMode] = useState(false);
   const [showColors, setShowColors] = useState(true);
-  const [drawingTool, setDrawingTool] = useState<ShapeType | null>(null);
+  const [drawingTool, setDrawingTool] = useState<DrawingTool | null>(null);
   const [viewMode, setViewMode] = useState<'2d' | '3d'>('2d');
+  const [cameraByProjectId, setCameraByProjectId] = useState<Record<string, Canvas3DCameraState>>(
+    {}
+  );
+
+  // Stable handler: an inline arrow here makes the canvas' selection effect re-run every
+  // render, which feeds back into setState and trips React's max-update-depth guard.
+  const handleSelectionChange = useCallback(
+    (ids: string[]) => setSelectedItemIds(new Set(ids)),
+    []
+  );
 
   const activeTrackSystem = useMemo(() => {
     const system =
@@ -370,29 +381,46 @@ function App() {
   };
 
   const handleUpdateElevation = useCallback(
-    (itemId: string, startMm: number, endMm: number) => {
+    (itemId: string, connectorElevationsMm: Record<string, number>) => {
       if (!activeLayout) return;
 
-      // Apply elevation and propagate through connected graph
-      const updatedStart = propagateElevation(activeLayout, itemId, 'start', startMm);
-      // Build a temporary layout with start propagated, then propagate end
-      const tempLayout = { ...activeLayout, placedItems: updatedStart };
-      const updatedBoth = propagateElevation(tempLayout, itemId, 'end', endMm);
+      const updated = propagateConnectorElevations(activeLayout, itemId, connectorElevationsMm);
 
       updateActiveProjectLayout((layout) => ({
         ...layout,
-        placedItems: updatedBoth,
+        placedItems: updated,
       }));
     },
     [activeLayout, updateActiveProjectLayout]
   );
 
+  const handleCameraStateChange = useCallback(
+    (state: Canvas3DCameraState) => {
+      const projectId = activeProject?.id;
+      if (!projectId) {
+        return;
+      }
+      setCameraByProjectId((previous) => ({
+        ...previous,
+        [projectId]: state,
+      }));
+    },
+    [activeProject?.id]
+  );
+
+  useEffect(() => {
+    if (viewMode === '3d' && selectedEndpoints.length > 0) {
+      setSelectedEndpoints([]);
+    }
+  }, [selectedEndpoints.length, viewMode]);
+
   const canRotateSelection =
     selectedItemIds.size > 0 && !selectedItemsConnected && !isSelectionGrounded;
   // Note: Shape deletion is handled internally by Canvas, so we only check for item selection here
   const canDeleteSelection = selectedItemIds.size > 0;
-  const canConnectEndpoints = selectedEndpoints.length === 2;
+  const canConnectEndpoints = viewMode === '2d' && selectedEndpoints.length === 2;
   const canDisconnectEndpoints = useMemo(() => {
+    if (viewMode !== '2d') return false;
     if (!activeLayout) return false;
     if (selectedEndpoints.length !== 2) return false;
     return Boolean(
@@ -400,7 +428,7 @@ function App() {
         connectionMatchesEndpoints(connection, selectedEndpoints)
       )
     );
-  }, [activeLayout, selectedEndpoints]);
+  }, [activeLayout, selectedEndpoints, viewMode]);
   const canToggleGroundSelection = selectedItemIds.size > 0;
 
   return (
@@ -466,7 +494,7 @@ function App() {
               layout={activeLayout}
               trackSystem={activeTrackSystem}
               onUpdateLayout={updateActiveProjectLayout}
-              onSelectionChange={(ids) => setSelectedItemIds(new Set(ids))}
+              onSelectionChange={handleSelectionChange}
               onSelectedEndpointsChange={setSelectedEndpoints}
               debugMode={debugMode}
               showColors={showColors}
@@ -485,9 +513,12 @@ function App() {
               <Canvas3D
                 layout={activeLayout}
                 trackSystem={activeTrackSystem}
+                projectId={activeProject?.id}
                 selectedItemIds={selectedItemIds}
-                onSelectionChange={(ids) => setSelectedItemIds(new Set(ids))}
+                onSelectionChange={handleSelectionChange}
                 onUpdateElevation={handleUpdateElevation}
+                cameraState={activeProject ? (cameraByProjectId[activeProject.id] ?? null) : null}
+                onCameraStateChange={handleCameraStateChange}
               />
             </Suspense>
           )}

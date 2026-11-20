@@ -32,6 +32,14 @@ export const VIEWPORT_SIZE = 1800;
 export const SNAP_DISTANCE_MM = 8;
 export const ANGLE_TOLERANCE_DEG = 15;
 
+// Sketch / base plane
+export const SKETCH_SNAP_DISTANCE_MM = 12;
+export const SKETCH_MIN_LENGTH_MM = 2;
+export const POLYGON_CLOSE_DISTANCE_MM = 16;
+export const BASE_PLANE_DEFAULT_THICKNESS_MM = 12;
+// Edge-to-edge snap threshold when dragging base-plane boards together.
+export const BOARD_SNAP_DISTANCE_MM = 25;
+
 // Export SVG
 export const METADATA_FONT_SIZE = 14;
 export const CANVAS_OUTLINE_STROKE_WIDTH = 1;

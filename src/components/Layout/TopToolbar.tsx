@@ -1,5 +1,5 @@
 import type { Project } from '../../types/project';
-import type { ShapeType } from '../../types/layout';
+import type { DrawingTool } from '../../types/layout';
 import { Undo, Redo } from 'lucide-react';
 
 interface TopToolbarProps {
@@ -31,8 +31,8 @@ interface TopToolbarProps {
   debugMode: boolean;
   showColors: boolean;
   onToggleColors: () => void;
-  drawingTool: ShapeType | null;
-  onDrawingToolChange: (tool: ShapeType | null) => void;
+  drawingTool: DrawingTool | null;
+  onDrawingToolChange: (tool: DrawingTool | null) => void;
   onDimensionAction?: (type: 'center' | 'inner' | 'outer') => boolean;
   viewMode: '2d' | '3d';
   onToggleViewMode: () => void;
@@ -146,6 +146,37 @@ export function TopToolbar({
               title="Add Text"
             >
               T
+            </button>
+            <button
+              type="button"
+              onClick={() => onDrawingToolChange(drawingTool === 'line' ? null : 'line')}
+              className={`${baseControlStyles} ${drawingTool === 'line' ? shapeButtonActive : shapeButton}`}
+              title="Draw Line (Shift = ortho; type a number for exact length)"
+            >
+              ╱
+            </button>
+          </div>
+          <div className="flex items-center gap-2 border-r border-slate-800 pr-3">
+            <span className="text-xs text-slate-400">Base plane:</span>
+            <button
+              type="button"
+              onClick={() =>
+                onDrawingToolChange(drawingTool === 'basePlaneRect' ? null : 'basePlaneRect')
+              }
+              className={`${baseControlStyles} ${drawingTool === 'basePlaneRect' ? shapeButtonActive : shapeButton}`}
+              title="Base-plane board: rectangle (type W, Tab, H for exact size)"
+            >
+              ▦
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                onDrawingToolChange(drawingTool === 'basePlanePolygon' ? null : 'basePlanePolygon')
+              }
+              className={`${baseControlStyles} ${drawingTool === 'basePlanePolygon' ? shapeButtonActive : shapeButton}`}
+              title="Base-plane board: polygon outline (click points, close to finish)"
+            >
+              ⬠
             </button>
           </div>
           <div className="flex items-center gap-2 border-r border-slate-800 pr-3">

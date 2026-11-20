@@ -1,6 +1,17 @@
 import { memo, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from 'react';
-import type { CanvasDimensionShape, CanvasShape, CanvasTextShape } from '../../../types/layout';
-import { getDimensionGeometry, formatDimensionLabel } from '../../../utils/shapeGeometry';
+import type {
+  CanvasDimensionShape,
+  CanvasLineShape,
+  CanvasShape,
+  CanvasTextShape,
+} from '../../../types/layout';
+import {
+  getDimensionGeometry,
+  formatDimensionLabel,
+  lineAngleDeg,
+  lineLength,
+  lineMidpoint,
+} from '../../../utils/shapeGeometry';
 import {
   SHAPE_STROKE_WIDTH,
   DIMENSION_TICK_LENGTH_MM,
@@ -44,6 +55,10 @@ export const ShapeRenderer = memo(function ShapeRenderer({
   onTextBlur,
   onTextDoubleClick,
 }: ShapeRendererProps) {
+  if (shape.type === 'line') {
+    return <LineShapeSvg shape={shape} isSelected={isSelected} />;
+  }
+
   const x = isDragging && dragPreview ? dragPreview.x : shape.x;
   const y = isDragging && dragPreview ? dragPreview.y : shape.y;
   const rotationDeg = isDragging && dragPreview ? dragPreview.rotationDeg : shape.rotationDeg;
@@ -173,6 +188,66 @@ export const ShapeRenderer = memo(function ShapeRenderer({
 
   return null;
 });
+
+function LineShapeSvg({ shape, isSelected }: { shape: CanvasLineShape; isSelected: boolean }) {
+  const strokeColor = isSelected ? SELECTED_SHAPE_STROKE_COLOR : SHAPE_STROKE_COLOR;
+  const strokeWidth = isSelected ? SHAPE_STROKE_WIDTH + 1 : SHAPE_STROKE_WIDTH;
+  const length = lineLength(shape);
+  const mid = lineMidpoint(shape);
+  const rawAngle = lineAngleDeg(shape);
+  const textRotation = rawAngle > 90 || rawAngle < -90 ? rawAngle - 180 : rawAngle;
+  const label = shape.label ?? `${length.toFixed(1)} mm`;
+  const fontSize = 8;
+  const labelBgWidth = estimateTextWidth(label, fontSize) + DIMENSION_TEXT_PADDING_MM * 2;
+  const labelBgHeight = fontSize + DIMENSION_TEXT_PADDING_MM * 2;
+
+  return (
+    <g data-shape={shape.id} style={{ cursor: 'pointer' }}>
+      <line
+        x1={shape.x1}
+        y1={shape.y1}
+        x2={shape.x2}
+        y2={shape.y2}
+        stroke={strokeColor}
+        strokeWidth={strokeWidth}
+        strokeLinecap="round"
+      />
+      {/* Wide transparent hit area so thin lines stay easy to click */}
+      <line
+        x1={shape.x1}
+        y1={shape.y1}
+        x2={shape.x2}
+        y2={shape.y2}
+        stroke="transparent"
+        strokeWidth={Math.max(strokeWidth * 4, 12)}
+        strokeLinecap="round"
+      />
+      {isSelected && (
+        <g transform={`translate(${mid.x} ${mid.y}) rotate(${textRotation})`}>
+          <rect
+            x={-labelBgWidth / 2}
+            y={-labelBgHeight - 2}
+            width={labelBgWidth}
+            height={labelBgHeight}
+            fill="rgba(15, 23, 42, 0.85)"
+            stroke={strokeColor}
+            strokeWidth={1}
+            rx={2}
+          />
+          <text
+            x={0}
+            y={-labelBgHeight / 2 - 2 + fontSize / 3}
+            textAnchor="middle"
+            fontSize={fontSize}
+            className="fill-slate-100"
+          >
+            {label}
+          </text>
+        </g>
+      )}
+    </g>
+  );
+}
 
 // Extracted to avoid repeating dimension geometry rendering
 type DimensionShapeSvgProps = {

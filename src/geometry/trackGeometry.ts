@@ -36,8 +36,10 @@ interface SimpleSwitchMeta {
 interface CurvedSwitchMeta {
   variant: 'curved-switch';
   direction: SwitchDirection;
-  innerRadiusMm: number;
-  outerRadiusMm: number;
+  /** Radius of the through (main) route, e.g. R2 for BWL/BWR, R3 for BWL-R3/BWR-R3. */
+  mainRadiusMm: number;
+  /** Radius of the parallel curve the diverging route joins (mainRadius + parallel spacing). */
+  divergeRadiusMm: number;
   angleDeg: number;
 }
 
@@ -84,8 +86,8 @@ const isCurvedSwitchMeta = (meta: unknown): meta is CurvedSwitchMeta => {
   return (
     meta.variant === 'curved-switch' &&
     isSwitchDirection(meta.direction) &&
-    hasNumber(meta.innerRadiusMm) &&
-    hasNumber(meta.outerRadiusMm) &&
+    hasNumber(meta.mainRadiusMm) &&
+    hasNumber(meta.divergeRadiusMm) &&
     hasNumber(meta.angleDeg)
   );
 };
@@ -271,40 +273,47 @@ function getSimpleSwitchGeometry(
   };
 }
 
+/**
+ * PIKO A-Gleis curved switch (Bogenweiche), modelled as the real "false" curved turnout:
+ * the entry is HORIZONTAL (tangent 0°) and BOTH routes use the SAME radius `mainRadiusMm`
+ * (R2 for BWL/BWR, R3 for the R3 variants), so both exits are PARALLEL at ±`angleDeg`.
+ * The main/through route is a pure arc; the diverging route is the same arc preceded by a
+ * `offset` (= R(n+1)−R(n) ≈ 61.88 mm, a G62) straight, shifting it onto the adjacent
+ * parallel curve. The two exits sit one G62 apart along the entry axis (≈30.9 mm
+ * perpendicular — clear of the 28 mm track width). Connectors are the TRUE tangents of
+ * this geometry (start = 180° backward, both exits = ±angle), matching every other piece
+ * so it snaps/rotates correctly.
+ */
 function getCurvedSwitchGeometry(meta: CurvedSwitchMeta): ComponentGeometry {
-  const { innerRadiusMm, outerRadiusMm, angleDeg, direction } = meta;
+  const { mainRadiusMm, divergeRadiusMm, angleDeg, direction } = meta;
   const theta = toRad(angleDeg);
-  const sweepFlag = direction === 'left' ? 0 : 1;
-  const directionSign = direction === 'left' ? 1 : -1;
+  const s = direction === 'left' ? 1 : -1; // +y (left) / -y (right) on screen
+  const sweepFlag = s === 1 ? 1 : 0; // entry tangent 0°, exit tangent +angle for left
+  const offset = divergeRadiusMm - mainRadiusMm; // parallel spacing, realised as a G62 straight
 
-  // Start vector rotated -180° and track angle added for testing
-  const start = makeConnector(0, 0, 180 - 180 + angleDeg);
+  // Entry is horizontal (forward +X); the start connector faces backward (180°).
+  const start = makeConnector(0, 0, 180);
 
-  const buildEnd = (radius: number): TrackConnector => {
-    const xMm = radius * Math.sin(theta);
-    const yMm = directionSign * curveDeflection(radius, theta);
-    // Endpoint vector is horizontal (0°) pointing outside (right) for consistent visualization
-    const directionDeg = 0;
-    return makeConnector(xMm, yMm, directionDeg);
-  };
+  const dx = mainRadiusMm * Math.sin(theta);
+  const dy = s * curveDeflection(mainRadiusMm, theta);
+  const exitDeg = s * angleDeg;
 
-  const outerEnd = buildEnd(outerRadiusMm);
-  const innerEnd = buildEnd(innerRadiusMm);
+  const end = makeConnector(dx, dy, exitDeg); // main: pure arc
+  const diverging = makeConnector(offset + dx, dy, exitDeg); // branch: G62 straight + same arc
 
-  const buildPathD = () => {
-    const largeArcFlag = 0;
-    return [
-      `M 0 0 A ${outerRadiusMm} ${outerRadiusMm} 0 ${largeArcFlag} ${sweepFlag} ${outerEnd.xMm} ${outerEnd.yMm}`,
-      `M 0 0 A ${innerRadiusMm} ${innerRadiusMm} 0 ${largeArcFlag} ${sweepFlag} ${innerEnd.xMm} ${innerEnd.yMm}`,
+  const buildPathD = () =>
+    [
+      `M 0 0 A ${mainRadiusMm} ${mainRadiusMm} 0 0 ${sweepFlag} ${dx} ${dy}`,
+      `M 0 0 L ${offset} 0 A ${mainRadiusMm} ${mainRadiusMm} 0 0 ${sweepFlag} ${offset + dx} ${dy}`,
     ].join(' ');
-  };
 
   return {
     start,
-    end: outerEnd,
+    end,
     buildPathD,
     extraConnectors: {
-      inner: innerEnd,
+      diverging,
+      branch: diverging,
     },
   };
 }
@@ -346,38 +355,41 @@ function getThreeWaySwitchGeometry(meta: ThreeWaySwitchMeta): ComponentGeometry 
   };
 }
 
+/**
+ * Symmetric Y-switch (WY). Two diverging routes only — no straight-through leg.
+ * Each route is a `branchRadiusMm` arc of `branchAngleDeg` (PIKO WY: R9 / 15°, a
+ * 30° total spread), optionally preceded by a short `stubLengthMm` lead to the frog.
+ * The `end` connector is the left route; the right route is an extra connector.
+ */
 function getYSwitchGeometry(meta: YSwitchMeta): ComponentGeometry {
   const { stubLengthMm, branchRadiusMm, branchAngleDeg } = meta;
+  const stub = stubLengthMm ?? 0;
   const theta = toRad(branchAngleDeg);
   const start = makeConnector(0, 0, 180);
-  const stubEnd = makeConnector(stubLengthMm, 0, 0);
 
   const buildBranch = (sign: 1 | -1): TrackConnector => {
-    const xMm = stubLengthMm + branchRadiusMm * Math.sin(theta);
+    const xMm = stub + branchRadiusMm * Math.sin(theta);
     const yMm = sign * curveDeflection(branchRadiusMm, theta);
-    // Endpoint vector is horizontal (0°) pointing outside (right) for consistent visualization
-    const directionDeg = 0;
-    return makeConnector(xMm, yMm, directionDeg);
+    // Match getCurveGeometry's end convention (dir 0) so attached curves connect cleanly.
+    return makeConnector(xMm, yMm, 0);
   };
 
   const left = buildBranch(1);
   const right = buildBranch(-1);
 
   const buildPathD = () => {
-    const largeArcFlag = 0;
+    const lead = stub > 0 ? `M 0 0 L ${stub} 0 ` : '';
     return [
-      `M 0 0 L ${stubLengthMm} 0`,
-      `M ${stubLengthMm} 0 A ${branchRadiusMm} ${branchRadiusMm} 0 ${largeArcFlag} 0 ${left.xMm} ${left.yMm}`,
-      `M ${stubLengthMm} 0 A ${branchRadiusMm} ${branchRadiusMm} 0 ${largeArcFlag} 1 ${right.xMm} ${right.yMm}`,
+      `${lead}M ${stub} 0 A ${branchRadiusMm} ${branchRadiusMm} 0 0 1 ${left.xMm} ${left.yMm}`,
+      `M ${stub} 0 A ${branchRadiusMm} ${branchRadiusMm} 0 0 0 ${right.xMm} ${right.yMm}`,
     ].join(' ');
   };
 
   return {
     start,
-    end: stubEnd,
+    end: left,
     buildPathD,
     extraConnectors: {
-      left,
       right,
     },
   };

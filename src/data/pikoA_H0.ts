@@ -1,4 +1,4 @@
-import type { TrackSystemDefinition } from '../types/trackSystem'
+import type { TrackSystemDefinition } from '../types/trackSystem';
 
 export const pikoA_H0: TrackSystemDefinition = {
   id: 'piko-a-h0',
@@ -112,7 +112,7 @@ export const pikoA_H0: TrackSystemDefinition = {
       id: 'WL',
       label: 'WL Left Switch 15° R9',
       type: 'switch',
-      article: '55221',
+      article: '55220',
       color: '#52BE80',
       lengthMm: 239,
       meta: {
@@ -127,7 +127,7 @@ export const pikoA_H0: TrackSystemDefinition = {
       id: 'WR',
       label: 'WR Right Switch 15° R9',
       type: 'switch',
-      article: '55220',
+      article: '55221',
       color: '#52BE80',
       lengthMm: 239,
       meta: {
@@ -139,10 +139,79 @@ export const pikoA_H0: TrackSystemDefinition = {
       },
     },
     {
+      id: 'BWL',
+      label: 'BWL Curved Left Switch R2→R3 30°',
+      type: 'switch',
+      article: '55222',
+      color: '#45B39D',
+      meta: {
+        variant: 'curved-switch',
+        direction: 'left',
+        mainRadiusMm: 421.9,
+        divergeRadiusMm: 483.8,
+        angleDeg: 30,
+      },
+    },
+    {
+      id: 'BWR',
+      label: 'BWR Curved Right Switch R2→R3 30°',
+      type: 'switch',
+      article: '55223',
+      color: '#45B39D',
+      meta: {
+        variant: 'curved-switch',
+        direction: 'right',
+        mainRadiusMm: 421.9,
+        divergeRadiusMm: 483.8,
+        angleDeg: 30,
+      },
+    },
+    {
+      id: 'BWL-R3',
+      label: 'BWL-R3 Curved Left Switch R3→R4 30°',
+      type: 'switch',
+      article: '55227',
+      color: '#48C9B0',
+      meta: {
+        variant: 'curved-switch',
+        direction: 'left',
+        mainRadiusMm: 483.8,
+        divergeRadiusMm: 545.6,
+        angleDeg: 30,
+      },
+    },
+    {
+      id: 'BWR-R3',
+      label: 'BWR-R3 Curved Right Switch R3→R4 30°',
+      type: 'switch',
+      article: '55228',
+      color: '#48C9B0',
+      meta: {
+        variant: 'curved-switch',
+        direction: 'right',
+        mainRadiusMm: 483.8,
+        divergeRadiusMm: 545.6,
+        angleDeg: 30,
+      },
+    },
+    {
+      id: 'WY',
+      label: 'WY Y-Switch 2×15° R9',
+      type: 'switch',
+      article: '55226',
+      color: '#16A085',
+      meta: {
+        variant: 'y-switch',
+        stubLengthMm: 0,
+        branchRadiusMm: 907.97,
+        branchAngleDeg: 15,
+      },
+    },
+    {
       id: 'W3',
       label: 'W3 3-Way Switch',
       type: 'switch',
-      article: '55224',
+      article: '55225',
       color: '#117864',
       lengthMm: 239,
       meta: {
@@ -157,7 +226,7 @@ export const pikoA_H0: TrackSystemDefinition = {
       id: 'DKW',
       label: 'DKW Double Slip Switch',
       type: 'switch',
-      article: '55224', // Note: Article number might be different, using placeholder or checking if available. DKW is usually 55224.
+      article: '55224',
       color: '#F4D03F',
       lengthMm: 239,
       meta: {
@@ -192,4 +261,4 @@ export const pikoA_H0: TrackSystemDefinition = {
       },
     },
   ],
-}
+};

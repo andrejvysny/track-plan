@@ -4,6 +4,7 @@ import type { LayoutState } from '../../../types/layout';
 import type { TrackComponentDefinition } from '../../../types/trackSystem';
 import { getCachedTrackGeometry } from '../../../geometry/trackGeometryCache3D';
 import { toRad } from '../../../geometry/geometryUtils';
+import { getConnectorElevationMm } from '../../../utils/elevationUtils';
 
 const tieMaterial = new THREE.MeshStandardMaterial({
   color: 0x6b4226,
@@ -41,39 +42,26 @@ export function GlobalTies({ layout, componentMap }: GlobalTiesProps) {
       const rotAngle = toRad(item.rotationDeg);
       const cosR = Math.cos(rotAngle);
       const sinR = Math.sin(rotAngle);
-      const elevStart = item.elevationStartMm ?? 0;
-      const elevEnd = item.elevationEndMm ?? 0;
-      const totalLen = cached.curves.reduce((s, c) => s + c.lengthMm, 0);
 
-      let accLen = 0;
-      for (let ci = 0; ci < cached.curves.length; ci++) {
-        const curve = cached.curves[ci];
-        const curveStartFrac = totalLen > 0 ? accLen / totalLen : 0;
-        const curveEndFrac = totalLen > 0 ? (accLen + curve.lengthMm) / totalLen : 1;
-        accLen += curve.lengthMm;
+      for (const tie of cached.tiePositions) {
+        const yStart = tie.startConnectorKey
+          ? getConnectorElevationMm(item, tie.startConnectorKey)
+          : 0;
+        const yEnd = tie.endConnectorKey
+          ? getConnectorElevationMm(item, tie.endConnectorKey)
+          : yStart;
+        const yElev = yStart + tie.t * (yEnd - yStart);
 
-        const numTies = Math.max(1, Math.floor(curve.lengthMm / 10));
-        for (let i = 0; i <= numTies; i++) {
-          const t = i / numTies;
-          const globalT = curveStartFrac + t * (curveEndFrac - curveStartFrac);
-          const yElev = elevStart + globalT * (elevEnd - elevStart);
+        const wx = item.x + tie.position.x * cosR - tie.position.z * sinR;
+        const wz = item.y + tie.position.x * sinR + tie.position.z * cosR;
+        const wy = yElev - TIE_DEPTH / 2;
 
-          const point = curve.centerline.getPoint(t);
-          const tangent = curve.centerline.getTangent(t);
-          const localRotY = Math.atan2(tangent.x, tangent.z);
-
-          // Rotate local position by item rotation
-          const wx = item.x + point.x * cosR - point.z * sinR;
-          const wz = item.y + point.x * sinR + point.z * cosR;
-          const wy = yElev - TIE_DEPTH / 2;
-
-          ties.push({ x: wx, y: wy, z: wz, rotY: localRotY - rotAngle });
-        }
+        ties.push({ x: wx, y: wy, z: wz, rotY: tie.rotationY - rotAngle });
       }
     }
 
     return ties;
-  }, [layout, componentMap]);
+  }, [layout.placedItems, componentMap]);
 
   useEffect(() => {
     const mesh = meshRef.current;
@@ -95,9 +83,17 @@ export function GlobalTies({ layout, componentMap }: GlobalTiesProps) {
     }
 
     mesh.instanceMatrix.needsUpdate = true;
+    mesh.computeBoundingSphere();
+    mesh.computeBoundingBox();
   }, [worldTies]);
 
   if (worldTies.length === 0) return null;
 
-  return <instancedMesh ref={meshRef} args={[tieGeometry, tieMaterial, worldTies.length]} />;
+  return (
+    <instancedMesh
+      ref={meshRef}
+      args={[tieGeometry, tieMaterial, worldTies.length]}
+      frustumCulled={false}
+    />
+  );
 }

@@ -14,6 +14,8 @@ export interface TrackCurve3D {
   leftRail: THREE.Curve<THREE.Vector3>;
   rightRail: THREE.Curve<THREE.Vector3>;
   lengthMm: number;
+  startConnectorKey: string | null;
+  endConnectorKey: string | null;
 }
 
 interface PathSegment {
@@ -177,7 +179,11 @@ function offsetCurvePoints(points: THREE.Vector3[], offset: number): THREE.Vecto
   return result;
 }
 
-function segmentToCurve3D(segment: PathSegment): TrackCurve3D {
+function segmentToCurve3D(
+  segment: PathSegment,
+  startConnectorKey: string | null,
+  endConnectorKey: string | null
+): TrackCurve3D {
   if (segment.type === 'line') {
     const start = new THREE.Vector3(segment.sx, 0, segment.sy);
     const end = new THREE.Vector3(segment.ex, 0, segment.ey);
@@ -200,7 +206,7 @@ function segmentToCurve3D(segment: PathSegment): TrackCurve3D {
       new THREE.Vector3(segment.ex - nx * HALF_GAUGE_MM, 0, segment.ey - nz * HALF_GAUGE_MM)
     );
 
-    return { centerline, leftRail, rightRail, lengthMm };
+    return { centerline, leftRail, rightRail, lengthMm, startConnectorKey, endConnectorKey };
   }
 
   // Arc segment
@@ -231,7 +237,7 @@ function segmentToCurve3D(segment: PathSegment): TrackCurve3D {
     lengthMm += centerPoints[i].distanceTo(centerPoints[i - 1]);
   }
 
-  return { centerline, leftRail, rightRail, lengthMm };
+  return { centerline, leftRail, rightRail, lengthMm, startConnectorKey, endConnectorKey };
 }
 
 /** Convert a track component definition into 3D curve data for rendering */
@@ -240,26 +246,46 @@ export function getTrackCurves3D(def: TrackComponentDefinition): TrackCurve3D[] 
   const pathD = geometry.buildPathD();
   const segments = parseSvgPath(pathD);
 
-  return segments.map((seg) => segmentToCurve3D(seg));
+  const connectorPositions = [
+    { key: 'start', xMm: geometry.start.xMm, yMm: geometry.start.yMm },
+    { key: 'end', xMm: geometry.end.xMm, yMm: geometry.end.yMm },
+    ...Object.entries(geometry.extraConnectors ?? {}).map(([key, connector]) => ({
+      key,
+      xMm: connector.xMm,
+      yMm: connector.yMm,
+    })),
+  ];
+
+  const connectorToleranceMm = 0.2;
+  const findConnectorKey = (xMm: number, yMm: number): string | null => {
+    let best: { key: string; distance: number } | null = null;
+    for (const connector of connectorPositions) {
+      const distance = Math.hypot(connector.xMm - xMm, connector.yMm - yMm);
+      if (!best || distance < best.distance) {
+        best = { key: connector.key, distance };
+      }
+    }
+    if (!best || best.distance > connectorToleranceMm) {
+      return null;
+    }
+    return best.key;
+  };
+
+  return segments.map((seg) =>
+    segmentToCurve3D(seg, findConnectorKey(seg.sx, seg.sy), findConnectorKey(seg.ex, seg.ey))
+  );
 }
 
 /** Apply elevation (Y offsets) to track curves. Returns new curves with modified Y values. */
 export function applyElevationToCurves(
   curves: TrackCurve3D[],
-  startMm: number,
-  endMm: number
+  connectorElevationsMm: Record<string, number> | undefined
 ): TrackCurve3D[] {
-  const totalLength = curves.reduce((sum, c) => sum + c.lengthMm, 0);
-  if (totalLength === 0) return curves;
-
-  let accLen = 0;
   return curves.map((curve) => {
-    const curveStartFrac = accLen / totalLength;
-    accLen += curve.lengthMm;
-    const curveEndFrac = accLen / totalLength;
-
-    const yStart = startMm + curveStartFrac * (endMm - startMm);
-    const yEnd = startMm + curveEndFrac * (endMm - startMm);
+    const yStart =
+      (curve.startConnectorKey ? connectorElevationsMm?.[curve.startConnectorKey] : undefined) ?? 0;
+    const yEnd =
+      (curve.endConnectorKey ? connectorElevationsMm?.[curve.endConnectorKey] : undefined) ?? 0;
 
     if (curve.centerline instanceof THREE.LineCurve3) {
       const applyToLine = (line: THREE.LineCurve3) => {
@@ -274,6 +300,8 @@ export function applyElevationToCurves(
         leftRail: applyToLine(curve.leftRail as THREE.LineCurve3),
         rightRail: applyToLine(curve.rightRail as THREE.LineCurve3),
         lengthMm: curve.lengthMm,
+        startConnectorKey: curve.startConnectorKey,
+        endConnectorKey: curve.endConnectorKey,
       };
     }
 
@@ -292,8 +320,22 @@ export function applyElevationToCurves(
       leftRail: applyToCatmull(curve.leftRail as THREE.CatmullRomCurve3),
       rightRail: applyToCatmull(curve.rightRail as THREE.CatmullRomCurve3),
       lengthMm: curve.lengthMm,
+      startConnectorKey: curve.startConnectorKey,
+      endConnectorKey: curve.endConnectorKey,
     };
   });
+}
+
+export function curveElevationEndpoints(
+  curve: Pick<TrackCurve3D, 'startConnectorKey' | 'endConnectorKey'>,
+  connectorElevationsMm: Record<string, number> | undefined
+): { startMm: number; endMm: number } {
+  return {
+    startMm:
+      (curve.startConnectorKey ? connectorElevationsMm?.[curve.startConnectorKey] : undefined) ?? 0,
+    endMm:
+      (curve.endConnectorKey ? connectorElevationsMm?.[curve.endConnectorKey] : undefined) ?? 0,
+  };
 }
 
 /** Get all connector positions in local 3D space (for endpoint indicators) */
